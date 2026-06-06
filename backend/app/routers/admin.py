@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import User, Prediction, PredictionResult, Draw
 from ..auth import get_current_admin, hash_password
-from ..schemas import AdminSetPassword
+from ..schemas import AdminSetPassword, AdminCreateUser
 from ..engine.data_engine import str_to_numbers
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -81,6 +81,22 @@ def overview(db: Session = Depends(get_db), admin: User = Depends(get_current_ad
 def list_users(db: Session = Depends(get_db), admin: User = Depends(get_current_admin)):
     users = db.query(User).order_by(User.created_at.asc()).all()
     return {"users": [_user_stats(db, u) for u in users]}
+
+
+@router.post("/users")
+def create_user(payload: AdminCreateUser, db: Session = Depends(get_db), admin: User = Depends(get_current_admin)):
+    if db.query(User).filter(User.email == payload.email.lower()).first():
+        raise HTTPException(status_code=400, detail="El email ya está registrado")
+    user = User(
+        name=payload.name.strip(),
+        email=payload.email.lower(),
+        password_hash=hash_password(payload.password),
+        is_admin=payload.is_admin,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return _user_stats(db, user)
 
 
 @router.get("/users/{user_id}")

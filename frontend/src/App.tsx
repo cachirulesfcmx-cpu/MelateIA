@@ -11,6 +11,7 @@ import Draws from "./pages/Draws";
 import Profile from "./pages/Profile";
 import Earnings from "./pages/Earnings";
 import AdminUsers from "./pages/AdminUsers";
+import ResetPassword from "./pages/ResetPassword";
 
 function Protected({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth();
@@ -32,6 +33,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={user && !loading ? <Navigate to="/" replace /> : <Login />} />
       <Route path="/register" element={user && !loading ? <Navigate to="/" replace /> : <Register />} />
+      <Route path="/reset" element={<ResetPassword />} />
       <Route path="/" element={<Protected><Dashboard /></Protected>} />
       <Route path="/predicciones" element={<Protected><Predictions /></Protected>} />
       <Route path="/historial" element={<Protected><History /></Protected>} />

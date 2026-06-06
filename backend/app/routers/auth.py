@@ -75,14 +75,21 @@ def forgot_password(payload: ForgotPassword, db: Session = Depends(get_db)):
     No email service is configured in this deployment, so the token is returned
     directly (demo). In real production this would be emailed to the user.
     """
+    from ..email_util import send_reset_email, email_configured
     user = db.query(User).filter(User.email == payload.email.lower()).first()
     if not user:
         # Do not reveal whether the email exists
-        return {"message": "Si el email existe, se generó un token de recuperación."}
+        return {"message": "Si el email existe, recibirás instrucciones para restablecer tu contraseña.", "sent": email_configured()}
     token = create_reset_token(user.id)
+    if email_configured():
+        sent = send_reset_email(user.email, token)
+        if sent:
+            return {"message": "Te enviamos un correo con el enlace para restablecer tu contraseña.", "sent": True}
+        # email configured but delivery failed -> fall back so the user isn't stuck
     return {
         "message": "Token de recuperación generado.",
         "reset_token": token,
+        "sent": False,
         "note": "Sin servicio de email configurado; usa este token para restablecer tu contraseña.",
     }
 

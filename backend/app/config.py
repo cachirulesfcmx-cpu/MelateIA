@@ -17,5 +17,18 @@ class Settings(BaseSettings):
 
     cors_origins: str = "*"
 
+    # Public app URL (used to build password-reset links)
+    app_url: str = "https://melate-ia.vercel.app"
+
+    # Email delivery for password recovery (optional).
+    # Preferred: Resend HTTP API. Fallback: SMTP. If neither is configured the
+    # reset token is returned directly (demo mode).
+    email_from: str = "MelateAI Pro <onboarding@resend.dev>"
+    resend_api_key: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+
 
 settings = Settings()

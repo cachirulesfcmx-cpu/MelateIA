@@ -27,6 +27,22 @@ export default function AdminUsers() {
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState<AdminUser | null>(null);
   const [newPwd, setNewPwd] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [form, setForm] = useState({ name: "", email: "", password: "", is_admin: false });
+
+  async function createUser() {
+    if (!form.name || !form.email || form.password.length < 6)
+      return notify("Completa nombre, email y contraseña (mín. 6)", "error");
+    try {
+      await api.post("/admin/users", form);
+      notify("Usuario creado ✦", "success");
+      setForm({ name: "", email: "", password: "", is_admin: false });
+      setCreateOpen(false);
+      load();
+    } catch (err) {
+      notify((err as Error).message, "error");
+    }
+  }
 
   useEffect(() => {
     if (user && !user.is_admin) {
@@ -105,7 +121,14 @@ export default function AdminUsers() {
           )}
 
           <div>
-            <SectionTitle title={`${users.length} usuarios registrados`} />
+            <SectionTitle
+              title={`${users.length} usuarios registrados`}
+              action={
+                <button onClick={() => setCreateOpen(true)} className="text-xs text-cyan-300 font-semibold">
+                  + Crear usuario
+                </button>
+              }
+            />
             <div className="space-y-3">
               {users.map((u) => (
                 <GlassCard key={u.id} className="!p-4" onClick={() => openDetail(u.id)}>
@@ -138,6 +161,19 @@ export default function AdminUsers() {
           </div>
         </div>
       )}
+
+      <LiquidModal open={createOpen} onClose={() => setCreateOpen(false)} title="Crear usuario">
+        <div className="space-y-3">
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="glass-input w-full" placeholder="Nombre" />
+          <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="glass-input w-full" placeholder="Email" />
+          <input type="text" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} className="glass-input w-full" placeholder="Contraseña (mín. 6)" />
+          <label className="flex items-center gap-2 text-sm text-white/70 px-1">
+            <input type="checkbox" checked={form.is_admin} onChange={(e) => setForm({ ...form, is_admin: e.target.checked })} className="accent-cyan-400 w-4 h-4" />
+            Es administrador
+          </label>
+          <GlassButton full size="lg" onClick={createUser}>Crear usuario</GlassButton>
+        </div>
+      </LiquidModal>
 
       <LiquidModal open={!!detail} onClose={() => setDetail(null)} title={detail?.name}>
         {detail && (

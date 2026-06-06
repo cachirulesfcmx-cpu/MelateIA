@@ -52,6 +52,13 @@ class AdminSetPassword(BaseModel):
     new_password: str = Field(min_length=6, max_length=128)
 
 
+class AdminCreateUser(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=128)
+    is_admin: bool = False
+
+
 class ProfileStats(BaseModel):
     user: UserOut
     total_predictions: int

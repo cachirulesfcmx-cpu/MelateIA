@@ -17,8 +17,11 @@ function ForgotPasswordModal({ open, onClose }: { open: boolean; onClose: () => 
   async function request() {
     setBusy(true);
     try {
-      const r = await api.post<{ reset_token?: string; message: string }>("/auth/forgot-password", { email });
-      if (r.reset_token) {
+      const r = await api.post<{ reset_token?: string; message: string; sent?: boolean }>("/auth/forgot-password", { email });
+      if (r.sent) {
+        notify("📧 Revisa tu correo: te enviamos el enlace para restablecer tu contraseña.", "success");
+        onClose();
+      } else if (r.reset_token) {
         setToken(r.reset_token);
         setStep(2);
         notify("Token de recuperación generado", "success");

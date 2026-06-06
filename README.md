@@ -10,7 +10,14 @@ Melate Retro y Revanchita**.
 
 Solo el **administrador** agrega resultados reales (sorteos): al hacerlo se evalúan
 las predicciones pendientes de **todos** los usuarios y el sistema se **reentrena**.
-Incluye **cambiar/recuperar contraseña** (recuperación por token; sin servicio de email).
+El admin también **crea/elimina usuarios** y **restablece contraseñas** desde su panel.
+
+**Recuperación de contraseña por email:** configura un proveedor con variables de
+entorno y el sistema enviará un enlace de reseteo (`/reset?token=…`); si no hay
+proveedor, devuelve el token directamente (modo demo).
+- Resend: `RESEND_API_KEY`, `EMAIL_FROM` (remitente verificado).
+- SMTP: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM`.
+- `APP_URL` para construir el enlace (por defecto la URL de producción).
 
 Desplegada en **Vercel** (frontend estático + función serverless FastAPI) con base de
 datos **PostgreSQL en Supabase** (esquema aislado `melateai`). Variables de entorno de
