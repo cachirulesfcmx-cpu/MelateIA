@@ -1,11 +1,13 @@
 """ML training / performance endpoints."""
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import ModelPerformance, User
+from ..models import ModelPerformance, User, Prediction, PredictionResult
 from ..auth import get_current_user
 from ..engine.game_config import GAME_KEYS, get_game
+from ..engine.strategies import STRATEGIES
 from ..engine.models_ml import get_model
 from ..engine import bandit
 from ..services import load_draw_rows
@@ -64,4 +66,87 @@ def performance(game_type: str | None = None, db: Session = Depends(get_db), use
             }
             for r in rows
         ]
+    }
+
+
+@router.get("/analytics")
+def analytics(game_type: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Performance & AI-evolution analytics for charts.
+
+    Returns: per-strategy learning (bandit weight + avg hits, aggregated across
+    games or filtered), and the current user's accuracy distribution + timeline.
+    """
+    # ---- strategy learning (system-wide) ----
+    pq = db.query(ModelPerformance)
+    if game_type:
+        pq = pq.filter(ModelPerformance.game_type == game_type)
+    rows = pq.all()
+    agg: dict[str, dict] = {}
+    for r in rows:
+        a = agg.setdefault(r.strategy, {"total": 0, "hits": 0.0, "best": 0, "weight": 0.0, "n": 0})
+        a["total"] += r.total_predictions or 0
+        a["hits"] += (r.average_hits or 0) * (r.total_predictions or 0)
+        a["best"] = max(a["best"], r.best_hits or 0)
+        a["weight"] += r.weight or 0
+        a["n"] += 1
+    strategies = []
+    for key, cfg in STRATEGIES.items():
+        a = agg.get(key)
+        total = a["total"] if a else 0
+        strategies.append({
+            "strategy": key,
+            "label": cfg["label"],
+            "total_predictions": total,
+            "average_hits": round(a["hits"] / total, 3) if a and total else 0.0,
+            "best_hits": a["best"] if a else 0,
+            "weight": round(a["weight"] / a["n"], 3) if a and a["n"] else 1.0,
+        })
+    wsum = sum(s["weight"] for s in strategies) or 1.0
+    for s in strategies:
+        s["normalized_weight"] = round(s["weight"] / wsum, 4)
+
+    # ---- user accuracy ----
+    base = (
+        db.query(PredictionResult, Prediction)
+        .join(Prediction, Prediction.id == PredictionResult.prediction_id)
+        .filter(Prediction.user_id == user.id)
+    )
+    if game_type:
+        base = base.filter(Prediction.game_type == game_type)
+    results = base.all()
+    dist = {str(k): 0 for k in range(7)}
+    for r, _ in results:
+        dist[str(min(6, r.hits))] += 1
+
+    # timeline grouped by day
+    tq = (
+        db.query(
+            func.date(PredictionResult.evaluated_at).label("d"),
+            func.avg(PredictionResult.hits),
+            func.count(PredictionResult.id),
+        )
+        .join(Prediction, Prediction.id == PredictionResult.prediction_id)
+        .filter(Prediction.user_id == user.id)
+    )
+    if game_type:
+        tq = tq.filter(Prediction.game_type == game_type)
+    tq = tq.group_by("d").order_by("d")
+    timeline = [
+        {"date": str(d), "avg_hits": round(float(avg), 3), "count": int(cnt)}
+        for d, avg, cnt in tq.all()
+    ]
+
+    total_eval = len(results)
+    total_hits = sum(r.hits for r, _ in results)
+    return {
+        "game_type": game_type,
+        "strategies": strategies,
+        "user": {
+            "hits_distribution": dist,
+            "timeline": timeline,
+            "total_predictions": db.query(Prediction).filter(Prediction.user_id == user.id).count(),
+            "total_evaluations": total_eval,
+            "average_hits": round(total_hits / total_eval, 3) if total_eval else 0.0,
+            "best_hits": max([r.hits for r, _ in results], default=0),
+        },
     }

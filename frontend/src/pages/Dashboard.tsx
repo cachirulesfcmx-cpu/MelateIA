@@ -153,6 +153,9 @@ export default function Dashboard() {
               💰 Estimador
             </GlassButton>
           </div>
+          <GlassButton full variant="ghost" size="lg" onClick={() => nav("/rendimiento")}>
+            📊 Rendimiento y evolución de la IA
+          </GlassButton>
         </div>
       )}
 
