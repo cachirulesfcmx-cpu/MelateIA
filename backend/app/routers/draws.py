@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Draw, User, CsvUpload
 from ..schemas import DrawCreate, DrawTextCreate, DrawCreateResult, DrawOut
-from ..auth import get_current_user
+from ..auth import get_current_user, get_current_admin
 from ..engine.game_config import get_game, validate_combination, GAME_KEYS, GAMES
 from ..engine.data_engine import parse_csv, parse_number_text, numbers_to_str, str_to_numbers
 from ..engine.features import GameStats, is_prime
@@ -115,7 +115,7 @@ def _draw_result(draw, ev: dict) -> dict:
 
 
 @router.post("", response_model=DrawCreateResult)
-def create_draw(payload: DrawCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def create_draw(payload: DrawCreate, db: Session = Depends(get_db), user: User = Depends(get_current_admin)):
     if payload.game_type not in GAME_KEYS:
         raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
     draw, ev = _create_draw(
@@ -126,7 +126,7 @@ def create_draw(payload: DrawCreate, db: Session = Depends(get_db), user: User =
 
 
 @router.post("/text", response_model=DrawCreateResult)
-def create_draw_text(payload: DrawTextCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def create_draw_text(payload: DrawTextCreate, db: Session = Depends(get_db), user: User = Depends(get_current_admin)):
     if payload.game_type not in GAME_KEYS:
         raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
     try:
@@ -145,7 +145,7 @@ async def upload_csv(
     game_type: str = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ):
     if game_type not in GAME_KEYS:
         raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")

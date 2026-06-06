@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Prediction, PredictionResult, Draw, User
 from ..schemas import BacktestRequest
-from ..auth import get_current_user
+from ..auth import get_current_user, get_current_admin
 from ..engine.game_config import get_game, GAME_KEYS
 from ..engine.data_engine import str_to_numbers
 from ..engine.backtesting import run_backtest
@@ -15,8 +15,8 @@ router = APIRouter(prefix="/api/evaluate", tags=["evaluation"])
 
 
 @router.post("/new-draw")
-def reevaluate_against_latest(game_type: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Manually trigger evaluation of pending predictions vs the latest draw."""
+def reevaluate_against_latest(game_type: str, db: Session = Depends(get_db), user: User = Depends(get_current_admin)):
+    """Admin: manually trigger evaluation of ALL users' pending predictions vs the latest draw."""
     if game_type not in GAME_KEYS:
         raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
     draw = (

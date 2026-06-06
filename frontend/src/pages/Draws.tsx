@@ -8,11 +8,13 @@ import { NumberBall } from "../components/NumberBall";
 import { AddDrawModal } from "../components/AddDrawModal";
 import { FloatingActionButton } from "../components/LiquidModal";
 import { useToast } from "../context/ToastContext";
+import { useAuth } from "../context/AuthContext";
 import type { Draw, DrawStats } from "../api/types";
 
 export default function Draws() {
   const games = useGames();
   const { notify } = useToast();
+  const { user } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [game, setGame] = useState("melate");
@@ -69,13 +71,15 @@ export default function Draws() {
         title="Sorteos"
         subtitle="Historial completo y estadísticas"
         right={
-          <button
-            onClick={() => fileRef.current?.click()}
-            className="glass rounded-2xl px-3 py-2 text-xs font-semibold active:scale-95"
-            disabled={uploading}
-          >
-            {uploading ? "…" : "⬆ CSV"}
-          </button>
+          user?.is_admin ? (
+            <button
+              onClick={() => fileRef.current?.click()}
+              className="glass rounded-2xl px-3 py-2 text-xs font-semibold active:scale-95"
+              disabled={uploading}
+            >
+              {uploading ? "…" : "⬆ CSV"}
+            </button>
+          ) : undefined
         }
       />
       <input ref={fileRef} type="file" accept=".csv" hidden onChange={upload} />
@@ -188,7 +192,7 @@ export default function Draws() {
         </div>
       )}
 
-      <FloatingActionButton onClick={() => setModal(true)} />
+      {user?.is_admin && <FloatingActionButton onClick={() => setModal(true)} />}
       <AddDrawModal open={modal} onClose={() => setModal(false)} games={games} defaultGame={game} onSaved={load} />
     </>
   );

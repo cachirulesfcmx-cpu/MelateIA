@@ -5,7 +5,12 @@ historial, backtesting y seguimiento** de los sorteos mexicanos **Melate, Revanc
 Melate Retro y Revanchita**.
 
 ### 🌐 App en vivo: **https://melate-ia.vercel.app**
-Cuenta demo: **demo@melateai.pro** / **demo1234**
+- Usuario: **demo@melateai.pro** / **demo1234**
+- Admin: **admin@melateai.pro** / **admin1234** (panel **Usuarios** + carga de resultados oficiales)
+
+Solo el **administrador** agrega resultados reales (sorteos): al hacerlo se evalúan
+las predicciones pendientes de **todos** los usuarios y el sistema se **reentrena**.
+Incluye **cambiar/recuperar contraseña** (recuperación por token; sin servicio de email).
 
 Desplegada en **Vercel** (frontend estático + función serverless FastAPI) con base de
 datos **PostgreSQL en Supabase** (esquema aislado `melateai`). Variables de entorno de

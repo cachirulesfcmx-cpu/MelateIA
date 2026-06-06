@@ -156,7 +156,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      <FloatingActionButton onClick={() => setModal(true)} />
+      {user?.is_admin && <FloatingActionButton onClick={() => setModal(true)} />}
       <AddDrawModal open={modal} onClose={() => setModal(false)} games={games} onSaved={load} />
     </>
   );
