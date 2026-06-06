@@ -147,6 +147,45 @@ def delete_user(user_id: int, db: Session = Depends(get_db), admin: User = Depen
     return {"deleted": user_id}
 
 
+@router.post("/email-test")
+def email_test(email: str, admin: User = Depends(get_current_admin)):
+    """Temporary: diagnose the Resend email integration."""
+    import json as _json, urllib.request, urllib.error
+    from ..config import settings
+    from ..email_util import email_configured
+    info = {
+        "configured": email_configured(),
+        "from": settings.email_from,
+        "has_key": bool(settings.resend_api_key),
+        "key_prefix": settings.resend_api_key[:6] if settings.resend_api_key else None,
+        "app_url": settings.app_url,
+    }
+    if not settings.resend_api_key:
+        return info
+    try:
+        payload = _json.dumps({
+            "from": settings.email_from, "to": [email],
+            "subject": "Test MelateAI Pro", "html": "<p>Prueba de integración.</p>",
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.resend.com/emails", data=payload,
+            headers={"Authorization": f"Bearer {settings.resend_api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            info["status"] = r.status
+            info["body"] = r.read().decode()[:300]
+    except urllib.error.HTTPError as e:
+        info["error"] = f"HTTP {e.code}"
+        try:
+            info["http_body"] = e.read().decode()[:300]
+        except Exception:
+            pass
+    except Exception as e:
+        info["error"] = repr(e)
+    return info
+
+
 @router.post("/users/{user_id}/reset-password")
 def admin_reset_password(user_id: int, payload: AdminSetPassword, db: Session = Depends(get_db), admin: User = Depends(get_current_admin)):
     user = db.query(User).filter(User.id == user_id).first()
