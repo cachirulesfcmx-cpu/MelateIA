@@ -4,6 +4,13 @@ Aplicación web **móvil-first** (estilo iOS 26 / *Liquid Glass*) para **anális
 historial, backtesting y seguimiento** de los sorteos mexicanos **Melate, Revancha,
 Melate Retro y Revanchita**.
 
+### 🌐 App en vivo: **https://melate-ia.vercel.app**
+Cuenta demo: **demo@melateai.pro** / **demo1234**
+
+Desplegada en **Vercel** (frontend estático + función serverless FastAPI) con base de
+datos **PostgreSQL en Supabase** (esquema aislado `melateai`). Variables de entorno de
+producción: `DATABASE_URL` (pooler de Supabase, IPv4), `DB_SCHEMA=melateai`, `SECRET_KEY`.
+
 > ⚠️ **Aviso importante:** Melate es un juego de **azar**. Ninguna IA puede garantizar
 > premios. MelateAI Pro genera combinaciones **estadísticamente optimizadas**, registra
 > resultados reales, compara aciertos y mejora su memoria con el tiempo — **no promete
