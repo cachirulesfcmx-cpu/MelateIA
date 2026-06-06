@@ -43,6 +43,10 @@ def _send_resend(to_email: str, subject: str, html: str) -> bool:
         headers={
             "Authorization": f"Bearer {settings.resend_api_key}",
             "Content-Type": "application/json",
+            # Cloudflare (in front of Resend) blocks the default urllib UA
+            # ("Python-urllib") with error 1010 — use an explicit User-Agent.
+            "User-Agent": "MelateAI-Pro/1.0 (+https://melate-ia.vercel.app)",
+            "Accept": "application/json",
         },
         method="POST",
     )
