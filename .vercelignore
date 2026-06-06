@@ -1,0 +1,7 @@
+**/node_modules
+backend/.venv
+backend/melateai.db
+backend/__pycache__
+**/__pycache__
+frontend/dist
+*.log

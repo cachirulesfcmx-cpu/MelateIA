@@ -1,0 +1,15 @@
+# Lightweight dependencies for the Vercel serverless backend.
+# (pandas/numpy/scikit-learn are intentionally omitted to stay within
+#  serverless size limits — the engine falls back to its pure-Python
+#  heuristic + symbolic + genetic path. Use backend/requirements.txt for
+#  the full ML stack when self-hosting.)
+fastapi==0.111.0
+SQLAlchemy==2.0.30
+pydantic==2.7.1
+pydantic-settings==2.2.1
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+python-multipart==0.0.9
+email-validator==2.1.1
+psycopg2-binary==2.9.9
