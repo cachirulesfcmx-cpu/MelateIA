@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+backend/.venv/
+backend/*.db
+backend/melateai.db
+.env
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# OS / editors
+.DS_Store
+*.log
+.idea/
+.vscode/
