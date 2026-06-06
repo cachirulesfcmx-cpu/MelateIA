@@ -19,3 +19,4 @@ frontend/vite.config.d.ts
 *.log
 .idea/
 .vscode/
+.vercel
