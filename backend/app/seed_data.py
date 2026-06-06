@@ -17,6 +17,8 @@ from .engine.data_engine import parse_csv, numbers_to_str
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 DEMO_EMAIL = "demo@melateai.pro"
 DEMO_PASSWORD = "demo1234"
+ADMIN_EMAIL = "admin@melateai.pro"
+ADMIN_PASSWORD = "admin1234"
 
 
 def ensure_demo_user(db: Session) -> User:
@@ -29,8 +31,27 @@ def ensure_demo_user(db: Session) -> User:
     return demo
 
 
+def ensure_admin_user(db: Session) -> User:
+    admin = db.query(User).filter(User.email == ADMIN_EMAIL).first()
+    if not admin:
+        admin = User(
+            name="Administrador",
+            email=ADMIN_EMAIL,
+            password_hash=hash_password(ADMIN_PASSWORD),
+            is_admin=True,
+        )
+        db.add(admin)
+        db.commit()
+        db.refresh(admin)
+    elif not admin.is_admin:
+        admin.is_admin = True
+        db.commit()
+    return admin
+
+
 def seed_database(db: Session, log=lambda *_: None) -> dict:
     demo = ensure_demo_user(db)
+    ensure_admin_user(db)
     summary = {}
     for key, cfg in GAMES.items():
         path = os.path.join(DATA_DIR, cfg.seed_file)
@@ -77,6 +98,7 @@ def seed_if_empty(db: Session) -> bool:
         has_draws = True  # table may not exist yet; create_all handles it elsewhere
     if has_draws:
         ensure_demo_user(db)
+        ensure_admin_user(db)
         return False
     seed_database(db)
     return True

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import Base, engine, get_db, SessionLocal, is_sqlite
-from .routers import auth, draws, predictions, evaluation, earnings, ml, dashboard
+from .routers import auth, draws, predictions, evaluation, earnings, ml, dashboard, admin
 from .schemas import BacktestRequest
 from .auth import get_current_user
 from .models import User
@@ -78,6 +78,7 @@ app.include_router(predictions.router)
 app.include_router(evaluation.router)
 app.include_router(earnings.router)
 app.include_router(ml.router)
+app.include_router(admin.router)
 
 
 @app.get("/api/health")

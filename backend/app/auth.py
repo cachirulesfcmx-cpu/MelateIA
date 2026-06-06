@@ -48,3 +48,10 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise credentials_exception
     return user
+
+
+def get_current_admin(user: User = Depends(get_current_user)) -> User:
+    """Require the authenticated user to be an administrator."""
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Se requieren privilegios de administrador")
+    return user

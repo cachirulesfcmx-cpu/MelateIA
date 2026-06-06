@@ -55,7 +55,10 @@ def save_prediction(payload: PredictionSave, db: Session = Depends(get_db), user
         raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
     if payload.strategy not in STRATEGY_KEYS:
         raise HTTPException(status_code=400, detail="Estrategia inválida")
-    numbers = validate_combination(payload.game_type, payload.numbers)
+    try:
+        numbers = validate_combination(payload.game_type, payload.numbers)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     pred = Prediction(
         user_id=user.id,
         game_type=payload.game_type,

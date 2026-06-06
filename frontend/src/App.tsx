@@ -10,6 +10,7 @@ import History from "./pages/History";
 import Draws from "./pages/Draws";
 import Profile from "./pages/Profile";
 import Earnings from "./pages/Earnings";
+import AdminUsers from "./pages/AdminUsers";
 
 function Protected({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth();
@@ -37,6 +38,7 @@ export default function App() {
       <Route path="/sorteos" element={<Protected><Draws /></Protected>} />
       <Route path="/estimador" element={<Protected><Earnings /></Protected>} />
       <Route path="/perfil" element={<Protected><Profile /></Protected>} />
+      <Route path="/admin/usuarios" element={<Protected><AdminUsers /></Protected>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

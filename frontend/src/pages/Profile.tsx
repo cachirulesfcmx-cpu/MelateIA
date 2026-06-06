@@ -99,6 +99,11 @@ export default function Profile() {
       )}
 
       <div className="space-y-3">
+        {user?.is_admin && (
+          <GlassButton full size="lg" onClick={() => nav("/admin/usuarios")}>
+            👥 Usuarios (Administración)
+          </GlassButton>
+        )}
         <GlassButton full variant="ghost" size="lg" onClick={() => nav("/estimador")}>
           💰 Estimador de ganancias
         </GlassButton>

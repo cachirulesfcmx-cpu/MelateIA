@@ -74,7 +74,10 @@ def _next_draw_number(db: Session, game_type: str) -> int:
 
 
 def _create_draw(db, user, game_type, numbers, draw_number, draw_date, additional, source):
-    numbers = validate_combination(game_type, numbers)
+    try:
+        numbers = validate_combination(game_type, numbers)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if draw_number is None:
         draw_number = _next_draw_number(db, game_type)
     exists = (

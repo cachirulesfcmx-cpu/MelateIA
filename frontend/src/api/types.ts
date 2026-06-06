@@ -2,7 +2,39 @@ export interface User {
   id: number;
   name: string;
   email: string;
+  is_admin?: boolean;
   created_at: string;
+}
+
+export interface AdminUser {
+  id: number;
+  name: string;
+  email: string;
+  is_admin: boolean;
+  created_at: string;
+  total_predictions: number;
+  total_draws_added: number;
+  evaluated_predictions: number;
+  best_hits: number;
+  average_hits: number;
+  best_combination: {
+    numbers: number[];
+    game_type: string;
+    strategy: string;
+    hits: number;
+    matched: number[];
+  } | null;
+  predictions?: {
+    id: number;
+    game_type: string;
+    strategy: string;
+    numbers: number[];
+    score: number;
+    status: string;
+    used: boolean;
+    best_hits: number;
+    created_at: string;
+  }[];
 }
 
 export interface ProfileStats {
