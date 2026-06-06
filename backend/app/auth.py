@@ -29,6 +29,22 @@ def create_access_token(user_id: int) -> str:
     return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
 
 
+def create_reset_token(user_id: int, minutes: int = 30) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    payload = {"sub": str(user_id), "type": "reset", "exp": expire}
+    return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
+
+
+def verify_reset_token(token: str) -> int | None:
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        if payload.get("type") != "reset":
+            return None
+        return int(payload["sub"])
+    except (JWTError, ValueError, KeyError):
+        return None
+
+
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

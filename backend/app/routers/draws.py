@@ -99,20 +99,30 @@ def _create_draw(db, user, game_type, numbers, draw_number, draw_date, additiona
     db.add(draw)
     db.commit()
     db.refresh(draw)
-    new_hits = evaluate_new_draw(db, draw)
+    ev = evaluate_new_draw(db, draw)
     db.refresh(draw)
-    return draw, new_hits
+    return draw, ev
+
+
+def _draw_result(draw, ev: dict) -> dict:
+    return {
+        "draw": _draw_out(draw),
+        "evaluated_predictions": ev.get("evaluated", 0),
+        "users_affected": ev.get("users_affected", 0),
+        "new_hits": ev.get("new_hits", []),
+        "retrained": ev.get("retrained"),
+    }
 
 
 @router.post("", response_model=DrawCreateResult)
 def create_draw(payload: DrawCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     if payload.game_type not in GAME_KEYS:
         raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
-    draw, new_hits = _create_draw(
+    draw, ev = _create_draw(
         db, user, payload.game_type, payload.numbers,
         payload.draw_number, payload.draw_date, payload.additional, "manual",
     )
-    return {"draw": _draw_out(draw), "evaluated_predictions": len(new_hits), "new_hits": new_hits}
+    return _draw_result(draw, ev)
 
 
 @router.post("/text", response_model=DrawCreateResult)
@@ -123,11 +133,11 @@ def create_draw_text(payload: DrawTextCreate, db: Session = Depends(get_db), use
         numbers = parse_number_text(payload.text)
     except ValueError:
         raise HTTPException(status_code=400, detail="No se pudieron interpretar los números")
-    draw, new_hits = _create_draw(
+    draw, ev = _create_draw(
         db, user, payload.game_type, numbers,
         payload.draw_number, payload.draw_date, None, "manual",
     )
-    return {"draw": _draw_out(draw), "evaluated_predictions": len(new_hits), "new_hits": new_hits}
+    return _draw_result(draw, ev)
 
 
 @router.post("/upload-csv")

@@ -39,8 +39,8 @@ export default function History() {
 
   async function reanalyze(id: number) {
     try {
-      const res = await api.get<{ hits: number }>(`/evaluate/prediction/${id}`);
-      notify(`Reanálisis: ${res.hits} aciertos vs último sorteo`, res.hits >= 3 ? "success" : "info");
+      const res = await api.get<{ hits: number; draw_number: number }>(`/evaluate/prediction/${id}`);
+      notify(`Evaluado vs sorteo #${res.draw_number}: ${res.hits} aciertos`, res.hits >= 3 ? "success" : "info");
       load();
     } catch (err) {
       notify((err as Error).message, "error");
@@ -183,7 +183,7 @@ function PredCard({
 
       {result && (
         <div className="mt-3 text-center text-[11px] text-white/45">
-          Comparada vs concurso #{result.draw_number} ·{" "}
+          Evaluado vs sorteo #{result.draw_number} ·{" "}
           <span className="text-emerald-300 font-semibold">{result.hits} aciertos</span> ·{" "}
           {result.missed_numbers.length} fallos
         </div>
@@ -191,7 +191,9 @@ function PredCard({
 
       <div className="flex items-center gap-2 mt-3">
         <GlassButton size="sm" variant="outline" onClick={onReanalyze} className="flex-1 !py-2">
-          🔄 Reanalizar
+          {p.can_evaluate && p.latest_draw_number
+            ? `🎯 Evaluar con sorteo #${p.latest_draw_number}`
+            : "🔄 Reanalizar"}
         </GlassButton>
         {!p.used && (
           <GlassButton size="sm" variant="ghost" onClick={onMarkUsed} className="flex-1 !py-2">

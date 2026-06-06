@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import User, Prediction, PredictionResult, Draw
-from ..auth import get_current_admin
+from ..auth import get_current_admin, hash_password
+from ..schemas import AdminSetPassword
 from ..engine.data_engine import str_to_numbers
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -128,3 +129,13 @@ def delete_user(user_id: int, db: Session = Depends(get_db), admin: User = Depen
     db.delete(user)  # cascades the user's predictions + their results
     db.commit()
     return {"deleted": user_id}
+
+
+@router.post("/users/{user_id}/reset-password")
+def admin_reset_password(user_id: int, payload: AdminSetPassword, db: Session = Depends(get_db), admin: User = Depends(get_current_admin)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    user.password_hash = hash_password(payload.new_password)
+    db.commit()
+    return {"message": f"Contraseña de {user.email} actualizada"}

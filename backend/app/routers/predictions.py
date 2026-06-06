@@ -120,7 +120,27 @@ def history(game_type: str | None = None, status: str | None = None, db: Session
     if status:
         q = q.filter(Prediction.status == status)
     preds = q.order_by(Prediction.created_at.desc()).all()
-    return [_pred_out_full(p, db) for p in preds]
+
+    # Latest official draw number per game, so the UI can offer
+    # "Evaluar con sorteo #xxxx" for still-pending predictions.
+    from sqlalchemy import func as _func
+    latest_rows = (
+        db.query(Draw.game_type, _func.max(Draw.draw_number))
+        .group_by(Draw.game_type)
+        .all()
+    )
+    latest_by_game = {gt: n for gt, n in latest_rows}
+
+    out = []
+    for p in preds:
+        d = _pred_out_full(p, db)
+        latest = latest_by_game.get(p.game_type)
+        d["latest_draw_number"] = latest
+        evaluated_draws = {r["draw_number"] for r in d["results"]}
+        # can still be evaluated against a newer official draw it hasn't seen
+        d["can_evaluate"] = latest is not None and latest not in evaluated_draws
+        out.append(d)
+    return out
 
 
 @router.post("/{pred_id}/mark-used", response_model=PredictionOut)

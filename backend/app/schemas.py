@@ -34,6 +34,24 @@ class Token(BaseModel):
     user: UserOut
 
 
+class ChangePassword(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=6, max_length=128)
+
+
+class ForgotPassword(BaseModel):
+    email: EmailStr
+
+
+class ResetPassword(BaseModel):
+    token: str
+    new_password: str = Field(min_length=6, max_length=128)
+
+
+class AdminSetPassword(BaseModel):
+    new_password: str = Field(min_length=6, max_length=128)
+
+
 class ProfileStats(BaseModel):
     user: UserOut
     total_predictions: int
@@ -71,7 +89,9 @@ class DrawOut(BaseModel):
 class DrawCreateResult(BaseModel):
     draw: DrawOut
     evaluated_predictions: int
+    users_affected: int = 0
     new_hits: list[dict]
+    retrained: Optional[dict] = None
 
 
 # ---------- Predictions ----------

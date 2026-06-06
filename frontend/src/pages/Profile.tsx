@@ -2,9 +2,48 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { useAuth } from "../context/AuthContext";
+import { useToast } from "../context/ToastContext";
 import { PageHeader } from "../components/AppLayout";
 import { GlassCard, GlassButton, Spinner, SectionTitle } from "../components/ui";
+import { LiquidModal } from "../components/LiquidModal";
 import type { ProfileStats } from "../api/types";
+
+function ChangePasswordModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { notify } = useToast();
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    if (next.length < 6) return notify("La nueva contraseña debe tener al menos 6 caracteres", "error");
+    if (next !== confirm) return notify("Las contraseñas no coinciden", "error");
+    setSaving(true);
+    try {
+      await api.post("/auth/change-password", { current_password: current, new_password: next });
+      notify("Contraseña actualizada ✦", "success");
+      setCurrent(""); setNext(""); setConfirm("");
+      onClose();
+    } catch (err) {
+      notify((err as Error).message, "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <LiquidModal open={open} onClose={onClose} title="Cambiar contraseña">
+      <div className="space-y-3">
+        <input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} className="glass-input w-full" placeholder="Contraseña actual" />
+        <input type="password" value={next} onChange={(e) => setNext(e.target.value)} className="glass-input w-full" placeholder="Nueva contraseña" />
+        <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} className="glass-input w-full" placeholder="Confirmar nueva contraseña" />
+        <GlassButton full size="lg" onClick={submit} disabled={saving}>
+          {saving ? "Guardando…" : "Actualizar contraseña"}
+        </GlassButton>
+      </div>
+    </LiquidModal>
+  );
+}
 
 interface PerfRow {
   strategy: string;
@@ -21,6 +60,7 @@ export default function Profile() {
   const [stats, setStats] = useState<ProfileStats | null>(null);
   const [perf, setPerf] = useState<PerfRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pwOpen, setPwOpen] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -107,10 +147,15 @@ export default function Profile() {
         <GlassButton full variant="ghost" size="lg" onClick={() => nav("/estimador")}>
           💰 Estimador de ganancias
         </GlassButton>
+        <GlassButton full variant="outline" size="lg" onClick={() => setPwOpen(true)}>
+          🔑 Cambiar contraseña
+        </GlassButton>
         <GlassButton full variant="danger" size="lg" onClick={doLogout}>
           Cerrar sesión
         </GlassButton>
       </div>
+
+      <ChangePasswordModal open={pwOpen} onClose={() => setPwOpen(false)} />
 
       <p className="text-center text-[11px] text-white/30 mt-6">MelateAI Pro · v1.0 · Juega con responsabilidad</p>
     </>

@@ -47,30 +47,31 @@ export function AddDrawModal({ open, onClose, games, defaultGame, onSaved }: Pro
         draw_number: drawNumber ? parseInt(drawNumber) : undefined,
         draw_date: date || undefined,
       };
-      let res;
+      type DrawRes = {
+        draw: { draw_number: number };
+        evaluated_predictions: number;
+        users_affected: number;
+        new_hits: any[];
+        retrained?: { trained?: boolean } | null;
+      };
+      let res: DrawRes;
       if (mode === "balls") {
         if (selected.length !== (cfg?.pick || 6)) {
           notify(`Selecciona ${cfg?.pick} números`, "error");
           setSaving(false);
           return;
         }
-        res = await api.post<{ draw: { draw_number: number }; evaluated_predictions: number; new_hits: any[] }>(
-          "/draws",
-          { ...payload, numbers: selected }
-        );
+        res = await api.post<DrawRes>("/draws", { ...payload, numbers: selected });
       } else {
-        res = await api.post<{ draw: { draw_number: number }; evaluated_predictions: number; new_hits: any[] }>(
-          "/draws/text",
-          { ...payload, text }
-        );
+        res = await api.post<DrawRes>("/draws/text", { ...payload, text });
       }
       const hits = res.new_hits?.length || 0;
-      notify(
-        hits > 0
-          ? `Sorteo #${res.draw.draw_number} guardado · ¡${hits} predicción(es) con aciertos!`
-          : `Sorteo #${res.draw.draw_number} guardado y comparado`,
-        "success"
-      );
+      const parts = [`Sorteo #${res.draw.draw_number} guardado`];
+      if (res.evaluated_predictions > 0)
+        parts.push(`${res.evaluated_predictions} predicción(es) de ${res.users_affected} usuario(s) evaluadas`);
+      if (hits > 0) parts.push(`¡${hits} con aciertos!`);
+      if (res.retrained?.trained) parts.push("sistema reentrenado");
+      notify(parts.join(" · "), "success");
       reset();
       onSaved?.();
       onClose();

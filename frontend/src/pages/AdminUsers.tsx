@@ -26,6 +26,7 @@ export default function AdminUsers() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState<AdminUser | null>(null);
+  const [newPwd, setNewPwd] = useState("");
 
   useEffect(() => {
     if (user && !user.is_admin) {
@@ -55,6 +56,17 @@ export default function AdminUsers() {
   async function openDetail(id: number) {
     try {
       setDetail(await api.get<AdminUser>(`/admin/users/${id}`));
+    } catch (err) {
+      notify((err as Error).message, "error");
+    }
+  }
+
+  async function resetPwd(id: number) {
+    if (newPwd.length < 6) return notify("Mínimo 6 caracteres", "error");
+    try {
+      await api.post(`/admin/users/${id}/reset-password`, { new_password: newPwd });
+      notify("Contraseña restablecida", "success");
+      setNewPwd("");
     } catch (err) {
       notify((err as Error).message, "error");
     }
@@ -166,6 +178,22 @@ export default function AdminUsers() {
                     </div>
                   </div>
                 ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs text-white/50 mb-2">🔑 Restablecer contraseña</p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newPwd}
+                  onChange={(e) => setNewPwd(e.target.value)}
+                  className="glass-input flex-1 !py-2 text-sm"
+                  placeholder="Nueva contraseña (mín. 6)"
+                />
+                <GlassButton variant="ghost" onClick={() => resetPwd(detail.id)} className="!py-2">
+                  Aplicar
+                </GlassButton>
               </div>
             </div>
 

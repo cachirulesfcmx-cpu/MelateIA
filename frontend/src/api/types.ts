@@ -103,6 +103,8 @@ export interface Prediction {
   created_at: string;
   results: PredictionResult[];
   best_hits: number;
+  latest_draw_number?: number | null;
+  can_evaluate?: boolean;
 }
 
 export interface Draw {

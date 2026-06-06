@@ -5,8 +5,14 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import User, Prediction, Draw, PredictionResult
-from ..schemas import UserCreate, UserLogin, Token, UserOut, ProfileStats
-from ..auth import hash_password, verify_password, create_access_token, get_current_user
+from ..schemas import (
+    UserCreate, UserLogin, Token, UserOut, ProfileStats,
+    ChangePassword, ForgotPassword, ResetPassword,
+)
+from ..auth import (
+    hash_password, verify_password, create_access_token, get_current_user,
+    create_reset_token, verify_reset_token,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -51,6 +57,47 @@ def login_form(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 def logout(_: User = Depends(get_current_user)):
     # Stateless JWT: client discards the token.
     return {"message": "Sesión cerrada"}
+
+
+@router.post("/change-password")
+def change_password(payload: ChangePassword, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="La contraseña actual es incorrecta")
+    user.password_hash = hash_password(payload.new_password)
+    db.commit()
+    return {"message": "Contraseña actualizada"}
+
+
+@router.post("/forgot-password")
+def forgot_password(payload: ForgotPassword, db: Session = Depends(get_db)):
+    """Issue a password-reset token.
+
+    No email service is configured in this deployment, so the token is returned
+    directly (demo). In real production this would be emailed to the user.
+    """
+    user = db.query(User).filter(User.email == payload.email.lower()).first()
+    if not user:
+        # Do not reveal whether the email exists
+        return {"message": "Si el email existe, se generó un token de recuperación."}
+    token = create_reset_token(user.id)
+    return {
+        "message": "Token de recuperación generado.",
+        "reset_token": token,
+        "note": "Sin servicio de email configurado; usa este token para restablecer tu contraseña.",
+    }
+
+
+@router.post("/reset-password")
+def reset_password(payload: ResetPassword, db: Session = Depends(get_db)):
+    user_id = verify_reset_token(payload.token)
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="Token inválido o expirado")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    user.password_hash = hash_password(payload.new_password)
+    db.commit()
+    return {"message": "Contraseña restablecida. Ya puedes iniciar sesión."}
 
 
 @router.get("/me", response_model=ProfileStats)

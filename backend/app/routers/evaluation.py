@@ -28,8 +28,7 @@ def reevaluate_against_latest(game_type: str, db: Session = Depends(get_db), use
     if not draw:
         raise HTTPException(status_code=404, detail="No hay sorteos para este juego")
     from ..services import evaluate_new_draw
-    new_hits = evaluate_new_draw(db, draw)
-    return {"draw_number": draw.draw_number, "evaluated": len(new_hits), "new_hits": new_hits}
+    return evaluate_new_draw(db, draw)
 
 
 @router.get("/prediction/{pred_id}")
