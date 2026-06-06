@@ -18,6 +18,12 @@ engine = create_engine(settings.database_url, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# Isolate all tables in a dedicated Postgres schema (e.g. "melateai") so every
+# statement is schema-qualified — no reliance on search_path through the pooler,
+# and no collision with other apps' tables in `public`. SQLite ignores this.
+if settings.db_schema and not is_sqlite:
+    Base.metadata.schema = settings.db_schema
+
 
 def get_db():
     db = SessionLocal()

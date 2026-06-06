@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .database import Base, engine, get_db, SessionLocal
+from .database import Base, engine, get_db, SessionLocal, is_sqlite
 from .routers import auth, draws, predictions, evaluation, earnings, ml, dashboard
 from .schemas import BacktestRequest
 from .auth import get_current_user
@@ -32,18 +32,27 @@ def _bootstrap():
                 except OSError:
                     pass
 
-    Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
+    # Ensure the dedicated schema exists (Postgres), then create tables + seed.
     try:
-        from .seed_data import seed_if_empty
-        seed_if_empty(db)
-    except Exception:
-        # never block startup on seeding issues
-        pass
-    finally:
-        db.close()
+        if not is_sqlite and settings.db_schema:
+            from sqlalchemy import text
+            with engine.begin() as conn:
+                conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{settings.db_schema}"'))
+        Base.metadata.create_all(bind=engine)
+        db = SessionLocal()
+        try:
+            from .seed_data import seed_if_empty
+            seed_if_empty(db)
+        finally:
+            db.close()
+    except Exception as e:
+        # Never crash the whole function on DB/bootstrap issues; routes that
+        # need the DB will surface errors, and /api/_diag reports the reason.
+        global BOOTSTRAP_ERROR
+        BOOTSTRAP_ERROR = repr(e)
 
 
+BOOTSTRAP_ERROR = None
 _bootstrap()
 
 app = FastAPI(

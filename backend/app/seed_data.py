@@ -42,11 +42,11 @@ def seed_database(db: Session, log=lambda *_: None) -> dict:
         }
         with open(path, "rb") as fh:
             rows = parse_csv(fh.read(), key)
-        imported = 0
+        objs = []
         for r in rows:
             if r["draw_number"] in existing:
                 continue
-            db.add(Draw(
+            objs.append(Draw(
                 game_type=key,
                 draw_number=r["draw_number"],
                 draw_date=r["draw_date"],
@@ -56,12 +56,16 @@ def seed_database(db: Session, log=lambda *_: None) -> dict:
                 created_by=demo.id,
             ))
             existing.add(r["draw_number"])
-            imported += 1
-        if imported:
-            db.add(CsvUpload(user_id=demo.id, filename=cfg.seed_file, game_type=key, rows_imported=imported))
-        db.commit()
-        summary[key] = imported
-        log(f"✓ {cfg.label}: {imported} sorteos importados ({len(rows)} en CSV)")
+        try:
+            if objs:
+                db.bulk_save_objects(objs)  # fast batch insert
+                db.add(CsvUpload(user_id=demo.id, filename=cfg.seed_file, game_type=key, rows_imported=len(objs)))
+            db.commit()
+        except Exception as e:  # concurrent seeding race, etc.
+            db.rollback()
+            log(f"! {cfg.label}: seeding skipped ({e})")
+        summary[key] = len(objs)
+        log(f"✓ {cfg.label}: {len(objs)} sorteos importados ({len(rows)} en CSV)")
     return summary
 
 
