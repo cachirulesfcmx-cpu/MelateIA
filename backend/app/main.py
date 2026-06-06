@@ -85,50 +85,6 @@ def health():
     return {"status": "ok", "app": "MelateAI Pro"}
 
 
-@app.get("/api/_diag")
-def diag(db: Session = Depends(get_db)):
-    """Temporary diagnostics for the live deployment."""
-    import os as _os
-    from .models import User as _User, Draw as _Draw
-    template = _os.path.join(_os.path.dirname(__file__), "..", "data", "seed.db")
-    target = settings.database_url.split("sqlite:///")[-1] if settings.database_url.startswith("sqlite") else None
-    info = {
-        "db_dialect": settings.database_url.split(":", 1)[0],
-        "db_schema": settings.db_schema,
-        "bootstrap_error": BOOTSTRAP_ERROR,
-        "secret_is_default": settings.secret_key == "change-me-in-production-melateai-pro-secret",
-        "template_path": _os.path.abspath(template),
-        "template_exists": _os.path.exists(template),
-        "target_db": target,
-        "target_exists": _os.path.exists(target) if target else None,
-        "cwd": _os.getcwd(),
-    }
-    try:
-        info["data_dir_listing"] = sorted(_os.listdir(_os.path.dirname(template)))
-    except Exception as e:
-        info["data_dir_listing"] = f"err: {e}"
-    try:
-        info["user_count"] = db.query(_User).count()
-        info["draw_count"] = db.query(_Draw).count()
-        demo = db.query(_User).filter(_User.email == "demo@melateai.pro").first()
-        info["demo_user_id"] = demo.id if demo else None
-    except Exception as e:
-        info["db_error"] = str(e)
-    # JWT self-test: sign + verify a token within this same request/process
-    try:
-        import hashlib
-        from .auth import create_access_token
-        from jose import jwt as _jwt
-        info["secret_len"] = len(settings.secret_key)
-        info["secret_fp"] = hashlib.sha256(settings.secret_key.encode()).hexdigest()[:12]
-        tok = create_access_token(12345)
-        payload = _jwt.decode(tok, settings.secret_key, algorithms=[settings.algorithm])
-        info["jwt_roundtrip"] = "ok" if payload.get("sub") == "12345" else "bad_payload"
-    except Exception as e:
-        info["jwt_roundtrip"] = f"fail: {e!r}"
-    return info
-
-
 # Spec alias: GET /api/backtesting
 @app.post("/api/backtesting")
 def backtesting_alias(payload: BacktestRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
