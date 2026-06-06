@@ -41,10 +41,10 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
         user_id = payload.get("sub")
         if user_id is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+            raise HTTPException(status_code=401, detail="debug:no_sub")
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=f"debug:jwt_error:{e}")
     user = db.query(User).filter(User.id == int(user_id)).first()
     if user is None:
-        raise credentials_exception
+        raise HTTPException(status_code=401, detail=f"debug:user_not_found:{user_id}")
     return user
