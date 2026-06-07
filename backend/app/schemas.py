@@ -117,6 +117,7 @@ class GeneratedCombo(BaseModel):
 
 
 class PredictionGenerateOut(BaseModel):
+    routed_to: Optional[str] = None
     game_type: str
     strategy: str
     combos: list[GeneratedCombo]

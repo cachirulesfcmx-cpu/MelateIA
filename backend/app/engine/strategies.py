@@ -94,6 +94,19 @@ STRATEGIES = {
         "genetic": True,
         "use_ml": True,
     },
+    "adaptativa": {
+        "label": "Adaptativa (IA)",
+        "desc": "Aprendizaje por refuerzo: enruta automáticamente a la estrategia que mejor ha rendido en este juego.",
+        "prefer": "balanced",
+        "recency_bias": 0.55,
+        "anti_popular": True,
+        "ideal_odd": 3, "ideal_primes": 2,
+        "component_weights": {"signal": 1.5, "spread": 1.4, "synergy": 1.2, "contrarian": 1.1},
+        "temperature": 1.0,
+        "genetic": True,
+        "use_ml": True,
+        "adaptive": True,
+    },
 }
 
 STRATEGY_KEYS = list(STRATEGIES.keys())

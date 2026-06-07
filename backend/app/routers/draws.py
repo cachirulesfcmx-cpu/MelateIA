@@ -278,7 +278,7 @@ def number_tracker(game_type: str, window: int = 50, db: Session = Depends(get_d
     for n in range(1, cfg.max_number + 1):
         gap = (total - 1 - last_idx[n]) if last_idx[n] is not None else total
         ld = last_date[n]
-        days = (today - ld).days if ld else None
+        days = max(0, (today - ld).days) if ld else None
         numbers.append({
             "number": n,
             "frequency": freq[n],

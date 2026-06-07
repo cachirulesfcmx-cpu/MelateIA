@@ -9,6 +9,7 @@ const ICONS: Record<string, string> = {
   calientes: "♨️",
   frios: "❄️",
   hibrida: "✨",
+  adaptativa: "🤖",
 };
 
 export function StrategySelector({

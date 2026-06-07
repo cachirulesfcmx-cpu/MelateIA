@@ -76,16 +76,17 @@ def forgot_password(payload: ForgotPassword, db: Session = Depends(get_db)):
     directly (demo). In real production this would be emailed to the user.
     """
     from ..email_util import send_reset_email, email_configured
+    generic = "Si el email existe, recibirás un correo con instrucciones para restablecer tu contraseña."
     user = db.query(User).filter(User.email == payload.email.lower()).first()
-    if not user:
-        # Do not reveal whether the email exists
-        return {"message": "Si el email existe, recibirás instrucciones para restablecer tu contraseña.", "sent": email_configured()}
-    token = create_reset_token(user.id)
     if email_configured():
-        sent = send_reset_email(user.email, token)
-        if sent:
-            return {"message": "Te enviamos un correo con el enlace para restablecer tu contraseña.", "sent": True}
-        # email configured but delivery failed -> fall back so the user isn't stuck
+        # Always return the same response to avoid user enumeration.
+        if user:
+            send_reset_email(user.email, create_reset_token(user.id))
+        return {"message": generic, "sent": True}
+    # Demo mode (no email provider): return the token directly.
+    if not user:
+        return {"message": generic, "sent": False}
+    token = create_reset_token(user.id)
     return {
         "message": "Token de recuperación generado.",
         "reset_token": token,
