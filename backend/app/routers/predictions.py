@@ -13,9 +13,11 @@ from ..schemas import (
 )
 from ..auth import get_current_user
 from ..engine.game_config import get_game, validate_combination, GAME_KEYS
-from ..engine.strategies import STRATEGIES, STRATEGY_KEYS
+from ..engine.strategies import STRATEGIES, STRATEGY_KEYS, build_profile
 from ..engine.generator import generate
 from ..engine.models_ml import get_model
+from ..engine.symbolic import score_combination
+from ..engine.features import combination_features, is_prime
 from ..engine.data_engine import numbers_to_str, str_to_numbers
 from ..services import build_stats, load_draw_rows
 
@@ -67,6 +69,69 @@ def generate_predictions(payload: PredictionGenerate, db: Session = Depends(get_
             c["strategy"] = "adaptativa"
             c["explanation"] = f"Adaptativa (IA · régimen {ctx}) → estrategia mejor evaluada: {STRATEGIES[effective]['label']}. " + c["explanation"]
     return {"game_type": payload.game_type, "strategy": payload.strategy, "combos": combos, "routed_to": routed, "context": ctx}
+
+
+from pydantic import BaseModel  # noqa: E402
+
+
+class ScoreRequest(BaseModel):
+    game_type: str
+    numbers: list[int]
+    strategy: str = "balanceada"
+
+
+def _tips(f: dict, cfg) -> list[str]:
+    tips = []
+    ideal_sum = cfg.pick * (cfg.max_number + 1) / 2
+    if f["odd"] <= 1 or f["odd"] >= cfg.pick - 1:
+        tips.append(f"Equilibra pares e impares (ideal ~{cfg.pick // 2}/{cfg.pick - cfg.pick // 2}).")
+    if f["sum"] < ideal_sum * 0.62:
+        tips.append("La suma es baja: considera algunos números más altos.")
+    elif f["sum"] > ideal_sum * 1.38:
+        tips.append("La suma es alta: considera algunos números más bajos.")
+    if f["consecutive"] >= 3:
+        tips.append("Demasiados consecutivos; rómpelos para un patrón menos obvio.")
+    if 0 in (f["low"], f["mid"], f["high"]):
+        tips.append("Distribuye en los tres tercios (bajos/medios/altos).")
+    if f["low"] == cfg.pick:
+        tips.append("Solo números ≤ tercio bajo; evita el sesgo de calendario.")
+    if f["primes"] == 0:
+        tips.append("Sin primos; agrega 1-2 para diversificar.")
+    if f["popularity"] >= 0.6:
+        tips.append("Patrón muy 'humano/popular'; algo más contrario reduce compartir premio.")
+    if not tips:
+        tips.append("Combinación bien equilibrada ✦")
+    return tips
+
+
+@router.post("/score")
+def score_combo(payload: ScoreRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    if payload.game_type not in GAME_KEYS:
+        raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
+    try:
+        numbers = validate_combination(payload.game_type, payload.numbers)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    stats, cfg = build_stats(db, payload.game_type)
+    if not stats.draws:
+        raise HTTPException(status_code=400, detail="Sin datos para este juego")
+    strategy = payload.strategy if payload.strategy in STRATEGY_KEYS else "balanceada"
+    profile = build_profile(strategy, stats)
+    s, comps = score_combination(numbers, stats, profile)
+    feats = combination_features(numbers, stats)
+    history = [r["numbers"] for r in load_draw_rows(db, payload.game_type)]
+    model = get_model(payload.game_type, cfg.max_number, history)
+    probs = model.probabilities(history)
+    mx = max(probs.values()) or 1.0
+    return {
+        "game_type": payload.game_type,
+        "numbers": numbers,
+        "score": s,
+        "components": {k: round(v, 3) for k, v in comps.items()},
+        "features": feats,
+        "number_probs": [{"number": n, "prob": round(probs[n], 4), "rel": round(probs[n] / mx, 3)} for n in numbers],
+        "tips": _tips(feats, cfg),
+    }
 
 
 @router.post("/save", response_model=PredictionOut)

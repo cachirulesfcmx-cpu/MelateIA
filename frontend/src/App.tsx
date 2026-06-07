@@ -13,6 +13,7 @@ import Earnings from "./pages/Earnings";
 import AdminUsers from "./pages/AdminUsers";
 import Analytics from "./pages/Analytics";
 import AssistantChat from "./pages/AssistantChat";
+import Builder from "./pages/Builder";
 import Legal from "./pages/Legal";
 import ResetPassword from "./pages/ResetPassword";
 
@@ -44,6 +45,7 @@ export default function App() {
       <Route path="/estimador" element={<Protected><Earnings /></Protected>} />
       <Route path="/rendimiento" element={<Protected><Analytics /></Protected>} />
       <Route path="/asistente" element={<Protected><AssistantChat /></Protected>} />
+      <Route path="/constructor" element={<Protected><Builder /></Protected>} />
       <Route path="/responsable" element={<Protected><Legal /></Protected>} />
       <Route path="/perfil" element={<Protected><Profile /></Protected>} />
       <Route path="/admin/usuarios" element={<Protected><AdminUsers /></Protected>} />

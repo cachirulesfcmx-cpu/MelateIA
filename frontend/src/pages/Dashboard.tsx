@@ -149,8 +149,14 @@ export default function Dashboard() {
             <GlassButton variant="ghost" size="lg" onClick={() => nav("/predicciones")}>
               ✨ Generar
             </GlassButton>
+            <GlassButton variant="ghost" size="lg" onClick={() => nav("/constructor")}>
+              🧩 Constructor
+            </GlassButton>
             <GlassButton variant="ghost" size="lg" onClick={() => nav("/estimador")}>
               💰 Estimador
+            </GlassButton>
+            <GlassButton variant="ghost" size="lg" onClick={() => nav("/asistente")}>
+              🤖 Asistente
             </GlassButton>
           </div>
           <GlassButton full variant="ghost" size="lg" onClick={() => nav("/rendimiento")}>

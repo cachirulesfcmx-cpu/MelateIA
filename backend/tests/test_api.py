@@ -132,3 +132,12 @@ def test_ml_probabilities(client):
     assert len(j["numbers"]) == 56
     assert len(j["top"]) >= 6
     assert all(0.0 <= n["rel"] <= 1.0 for n in j["numbers"])
+
+
+def test_score_combo(client):
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    r = client.post("/api/predictions/score", headers=uh, json={"game_type": "melate", "numbers": [1, 2, 3, 4, 5, 6]})
+    assert r.status_code == 200
+    j = r.json()
+    assert 0.0 <= j["score"] <= 1.0 and len(j["tips"]) >= 1 and len(j["number_probs"]) == 6
+    assert client.post("/api/predictions/score", headers=uh, json={"game_type": "melate", "numbers": [1, 1, 3, 4, 5, 6]}).status_code == 400
