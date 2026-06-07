@@ -5,6 +5,7 @@ import { PageHeader } from "../components/AppLayout";
 import { GlassCard, GlassButton, Spinner, Capsule, gameTheme, SectionTitle } from "../components/ui";
 import { NumberBall } from "../components/NumberBall";
 import { useToast } from "../context/ToastContext";
+import { sharePrediction } from "../shareImage";
 import type { Prediction } from "../api/types";
 
 const STATUS_LABEL: Record<string, { t: string; c: string }> = {
@@ -200,6 +201,9 @@ function PredCard({
             ✓ Usar
           </GlassButton>
         )}
+        <GlassButton size="sm" variant="ghost" onClick={() => sharePrediction({ numbers: p.numbers, gameType: p.game_type, strategy: p.strategy, score: p.score })} className="!py-2 !px-3">
+          ↗
+        </GlassButton>
         <GlassButton size="sm" variant="danger" onClick={onDelete} className="!py-2 !px-3">
           🗑
         </GlassButton>

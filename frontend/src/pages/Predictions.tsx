@@ -7,6 +7,7 @@ import { GameSelector } from "../components/GameSelector";
 import { StrategySelector } from "../components/StrategySelector";
 import { NumberBall } from "../components/NumberBall";
 import { useToast } from "../context/ToastContext";
+import { sharePrediction } from "../shareImage";
 import type { GeneratedCombo } from "../api/types";
 
 export default function Predictions() {
@@ -114,7 +115,7 @@ export default function Predictions() {
           />
           <div className="space-y-3">
             {combos.map((c, i) => (
-              <ComboCard key={i} combo={c} grad={theme.grad} saved={saved.has(i)} onSave={() => save(c, i)} rank={i + 1} />
+              <ComboCard key={i} combo={c} gameType={game} grad={theme.grad} saved={saved.has(i)} onSave={() => save(c, i)} rank={i + 1} />
             ))}
           </div>
         </div>
@@ -125,12 +126,14 @@ export default function Predictions() {
 
 function ComboCard({
   combo,
+  gameType,
   grad,
   saved,
   onSave,
   rank,
 }: {
   combo: GeneratedCombo;
+  gameType: string;
   grad: string;
   saved: boolean;
   onSave: () => void;
@@ -145,15 +148,23 @@ function ComboCard({
           <span className="w-6 h-6 rounded-full bg-white/10 text-xs font-bold flex items-center justify-center">{rank}</span>
           <ConfidenceBar pct={pct} />
         </div>
-        <button
-          onClick={onSave}
-          disabled={saved}
-          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition active:scale-95 ${
-            saved ? "bg-emerald-500/20 text-emerald-300" : "bg-white/10 text-white hover:bg-white/15"
-          }`}
-        >
-          {saved ? "✓ Guardada" : "Guardar"}
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => sharePrediction({ numbers: combo.numbers, gameType, strategy: combo.strategy, score: combo.score })}
+            className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white/10 text-white hover:bg-white/15 active:scale-95 transition"
+          >
+            ↗ Compartir
+          </button>
+          <button
+            onClick={onSave}
+            disabled={saved}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition active:scale-95 ${
+              saved ? "bg-emerald-500/20 text-emerald-300" : "bg-white/10 text-white hover:bg-white/15"
+            }`}
+          >
+            {saved ? "✓ Guardada" : "Guardar"}
+          </button>
+        </div>
       </div>
       <div className="flex gap-2 flex-wrap justify-center py-1">
         {combo.numbers.map((n, idx) => (
