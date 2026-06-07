@@ -97,3 +97,20 @@ class CsvUpload(Base):
     game_type = Column(String, nullable=False)
     rows_imported = Column(Integer, default=0)
     uploaded_at = Column(DateTime, default=utcnow)
+
+
+class LearningLog(Base):
+    """Time-series snapshot of the reinforcement-learning evolution.
+
+    One row is appended every time an evaluation updates a strategy's weight,
+    so the analytics can plot how the system's learning evolves over time.
+    """
+    __tablename__ = "learning_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    strategy = Column(String, index=True, nullable=False)
+    game_type = Column(String, index=True, nullable=False)
+    hits = Column(Integer, default=0)
+    weight = Column(Float, default=1.0)
+    average_hits = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=utcnow, index=True)

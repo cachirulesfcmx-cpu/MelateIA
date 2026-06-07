@@ -17,8 +17,11 @@ interface Strat {
   weight: number;
   normalized_weight: number;
 }
+interface EvoPoint { i: number; cum_avg_hits: number; weight: number; strategy: string; hits: number; }
 interface Analytics {
   strategies: Strat[];
+  evolution: EvoPoint[];
+  learning_events: number;
   user: {
     hits_distribution: Record<string, number>;
     timeline: { date: string; avg_hits: number; count: number }[];
@@ -96,9 +99,18 @@ export default function Analytics() {
         <Spinner />
       ) : (
         <div className="space-y-5 animate-fade-in">
-          {/* AI learning: bandit weights */}
+          {/* AI learning over time */}
           <GlassCard>
-            <SectionTitle title="🧠 Evolución del aprendizaje" subtitle="Confianza del sistema por estrategia (refuerzo)" />
+            <SectionTitle title="🧠 Evolución del aprendizaje" subtitle={`${data.learning_events} eventos de aprendizaje (refuerzo)`} />
+            {data.evolution.length > 0 ? (
+              <>
+                <p className="text-[11px] text-white/50 mb-1">Aciertos promedio acumulados del sistema</p>
+                <AreaChart points={data.evolution.map((e) => ({ x: String(e.i), y: e.cum_avg_hits }))} />
+              </>
+            ) : (
+              <p className="text-center text-xs text-white/30 py-4">El sistema aún no registra eventos de aprendizaje. Aparecen cuando el admin carga resultados oficiales.</p>
+            )}
+            <p className="text-[11px] text-white/50 mt-3 mb-2">Confianza actual por estrategia</p>
             <BarList
               items={data.strategies.map((s) => ({ label: s.label, value: s.normalized_weight * 100, sub: `${s.total_predictions} eval` }))}
               format={(v) => `${v.toFixed(1)}%`}

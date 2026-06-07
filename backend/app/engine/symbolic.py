@@ -83,11 +83,27 @@ def score_combination(numbers: list[int], stats: GameStats, profile: dict) -> tu
     # Repeats from last draw (1 is typical, many is unusual)
     components["repeats"] = _bell(f["repeats_last"], profile.get("ideal_repeats", 1), 1.4)
 
+    # Pair synergy: reward combinations whose pairs have co-occurred often in
+    # history (uses GameStats.pair_freq — "pares/tríos frecuentes"). Mild signal.
+    sd = sorted(numbers)
+    if stats.pair_freq:
+        pair_sum = 0
+        for a in range(len(sd)):
+            for b in range(a + 1, len(sd)):
+                key = (sd[a], sd[b])
+                pair_sum += stats.pair_freq.get(key, 0)
+        n_pairs = pick * (pick - 1) / 2
+        max_pair = max(stats.pair_freq.values()) or 1
+        components["synergy"] = min(1.0, (pair_sum / n_pairs) / max_pair)
+    else:
+        components["synergy"] = 0.0
+
     # Weighted aggregate
     weights_w = profile.get("component_weights", {})
     default_w = {
         "sum": 1.0, "parity": 1.0, "range": 1.0, "spread": 1.2, "primes": 0.6,
         "consecutive": 0.8, "signal": 1.6, "contrarian": 1.0, "repeats": 0.6,
+        "synergy": 0.7,
     }
     total_w = 0.0
     acc = 0.0
@@ -107,6 +123,7 @@ def explain(numbers: list[int], stats: GameStats, components: dict, strategy_lab
         "spread": "buena distribución por tercios", "primes": "primos óptimos",
         "consecutive": "pocos consecutivos", "signal": "señal estadística fuerte",
         "contrarian": "patrón poco popular", "repeats": "repeticiones razonables",
+        "synergy": "pares históricamente frecuentes", "ml": "modelo ML",
     }
     highlights = ", ".join(names.get(k, k) for k, _ in top)
     return (

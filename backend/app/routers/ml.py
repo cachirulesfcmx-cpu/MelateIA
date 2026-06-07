@@ -4,7 +4,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import ModelPerformance, User, Prediction, PredictionResult
+from ..models import ModelPerformance, User, Prediction, PredictionResult, LearningLog
 from ..auth import get_current_user
 from ..engine.game_config import GAME_KEYS, get_game
 from ..engine.strategies import STRATEGIES
@@ -136,11 +136,30 @@ def analytics(game_type: str | None = None, db: Session = Depends(get_db), user:
         for d, avg, cnt in tq.all()
     ]
 
+    # ---- learning evolution over time (reinforcement) ----
+    lq = db.query(LearningLog)
+    if game_type:
+        lq = lq.filter(LearningLog.game_type == game_type)
+    logs = lq.order_by(LearningLog.created_at.asc()).all()
+    evolution = []
+    run_sum = 0
+    for i, lg in enumerate(logs[-120:], start=1):
+        run_sum += lg.hits or 0
+        evolution.append({
+            "i": i,
+            "cum_avg_hits": round(run_sum / i, 3),
+            "weight": round(lg.weight or 0, 3),
+            "strategy": lg.strategy,
+            "hits": lg.hits or 0,
+        })
+
     total_eval = len(results)
     total_hits = sum(r.hits for r, _ in results)
     return {
         "game_type": game_type,
         "strategies": strategies,
+        "evolution": evolution,
+        "learning_events": len(logs),
         "user": {
             "hits_distribution": dist,
             "timeline": timeline,

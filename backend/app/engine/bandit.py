@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from ..models import ModelPerformance
+from ..models import ModelPerformance, LearningLog
 
 
 REWARD_TABLE = {0: -0.05, 1: -0.02, 2: 0.15, 3: 0.5, 4: 1.5, 5: 4.0, 6: 10.0}
@@ -41,6 +41,12 @@ def update_on_result(db: Session, strategy: str, game_type: str, hits: int) -> M
     # exponential update, clamped to a sane band
     new_weight = perf.weight * (1 - ALPHA) + (perf.weight + reward) * ALPHA
     perf.weight = max(0.1, min(8.0, round(new_weight, 4)))
+
+    # append an evolution snapshot for the analytics timeline
+    db.add(LearningLog(
+        strategy=strategy, game_type=game_type, hits=hits,
+        weight=perf.weight, average_hits=perf.average_hits,
+    ))
     db.flush()
     return perf
 

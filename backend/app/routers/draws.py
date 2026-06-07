@@ -1,5 +1,6 @@
 """Draw endpoints: list, add (text/balls), CSV upload, statistics."""
 from collections import Counter
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session
@@ -229,4 +230,77 @@ def draw_stats(game_type: str, window: int = 50, db: Session = Depends(get_db)):
             "repeats_vs_previous": avg(repeats_list),
         },
         "sum_min": min(sums), "sum_max": max(sums),
+    }
+
+
+def _parse_date(s):
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(str(s)[:10], fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+@router.get("/number-tracker")
+def number_tracker(game_type: str, window: int = 50, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Per-number hot/cold ranking + appearance timer (gap in draws, last date,
+    days since last appearance)."""
+    if game_type not in GAME_KEYS:
+        raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
+    cfg = get_game(game_type)
+    rows = load_draw_rows(db, game_type)  # oldest -> newest
+    if not rows:
+        return {"game_type": game_type, "total_draws": 0, "numbers": []}
+
+    total = len(rows)
+    last_idx = {n: None for n in range(1, cfg.max_number + 1)}
+    last_date = {n: None for n in range(1, cfg.max_number + 1)}
+    freq = {n: 0 for n in range(1, cfg.max_number + 1)}
+    recent = {n: 0 for n in range(1, cfg.max_number + 1)}
+    recent_start = max(0, total - window)
+    for idx, r in enumerate(rows):
+        d = _parse_date(r["draw_date"])
+        for n in r["numbers"]:
+            if 1 <= n <= cfg.max_number:
+                freq[n] += 1
+                last_idx[n] = idx
+                if d:
+                    last_date[n] = d
+                if idx >= recent_start:
+                    recent[n] += 1
+
+    today = date.today()
+    max_freq = max(freq.values()) or 1
+    numbers = []
+    for n in range(1, cfg.max_number + 1):
+        gap = (total - 1 - last_idx[n]) if last_idx[n] is not None else total
+        ld = last_date[n]
+        days = (today - ld).days if ld else None
+        numbers.append({
+            "number": n,
+            "frequency": freq[n],
+            "recent": recent[n],
+            "gap": gap,                       # draws since last appearance
+            "last_date": ld.isoformat() if ld else None,
+            "days_since": days,               # "cronómetro": días desde su última aparición
+            "heat": round(recent[n] / max(1, window), 3),
+            "temp": "hot" if recent[n] >= (window * cfg.pick / cfg.max_number) else "cold",
+        })
+
+    hot = sorted(numbers, key=lambda x: (x["recent"], x["frequency"]), reverse=True)[:12]
+    cold = sorted(numbers, key=lambda x: (x["recent"], -x["gap"]))[:12]
+    overdue = sorted(numbers, key=lambda x: x["gap"], reverse=True)[:12]
+    return {
+        "game_type": game_type,
+        "label": cfg.label,
+        "max_number": cfg.max_number,
+        "total_draws": total,
+        "window": window,
+        "hot": hot,
+        "cold": cold,
+        "overdue": overdue,
+        "numbers": numbers,
     }
