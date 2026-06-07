@@ -71,10 +71,15 @@ class NumberModel:
         self.metrics: dict = {}
         self.backend = "heuristic"
 
-    def fit(self, history: list[list[int]], min_history: int = 60):
+    def fit(self, history: list[list[int]], min_history: int = 60, max_train_draws: int = 900):
         if not SKLEARN or len(history) < min_history:
             self.trained = False
             return self
+        # Bound training to the most recent draws (recent data is more relevant
+        # and keeps memory/CPU sane on small hosts). Deeper history still informs
+        # the heuristic fallback.
+        if len(history) > max_train_draws:
+            history = history[-max_train_draws:]
         X, y = [], []
         start = 30
         for idx in range(start, len(history)):
@@ -87,12 +92,21 @@ class NumberModel:
         if len(set(y.tolist())) < 2:
             self.trained = False
             return self
-        # Gradient boosting tends to calibrate probabilities better here
-        self.model = GradientBoostingClassifier(
-            n_estimators=120, max_depth=3, learning_rate=0.08, subsample=0.85,
-        )
+        # Prefer XGBoost when available (faster, often better calibrated);
+        # otherwise fall back to scikit-learn's GradientBoosting.
+        if HAS_XGB:
+            import xgboost as xgb
+            self.model = xgb.XGBClassifier(
+                n_estimators=180, max_depth=4, learning_rate=0.08, subsample=0.85,
+                colsample_bytree=0.85, eval_metric="logloss", n_jobs=2, tree_method="hist",
+            )
+            self.backend = "XGBoost"
+        else:
+            self.model = GradientBoostingClassifier(
+                n_estimators=120, max_depth=3, learning_rate=0.08, subsample=0.85,
+            )
+            self.backend = "GradientBoosting"
         self.model.fit(X, y)
-        self.backend = "GradientBoosting"
         self.trained = True
         # simple train accuracy / base rate for reporting
         preds = self.model.predict(X)
