@@ -30,5 +30,15 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
 
+    # AI assistant (Claude). Leave key empty to disable the assistant.
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-6"
+
+    # Error monitoring (optional)
+    sentry_dsn: str = ""
+
+    # Rate limiting
+    rate_limit_enabled: bool = True
+
 
 settings = Settings()

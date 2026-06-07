@@ -8,10 +8,18 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import Base, engine, get_db, SessionLocal, is_sqlite
-from .routers import auth, draws, predictions, evaluation, earnings, ml, dashboard, admin
+from .routers import auth, draws, predictions, evaluation, earnings, ml, dashboard, admin, assistant
 from .schemas import BacktestRequest
 from .auth import get_current_user
 from .models import User
+
+# Optional error monitoring
+if settings.sentry_dsn:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(dsn=settings.sentry_dsn, traces_sample_rate=0.1)
+    except Exception:
+        pass
 
 
 def _bootstrap():
@@ -79,6 +87,7 @@ app.include_router(evaluation.router)
 app.include_router(earnings.router)
 app.include_router(ml.router)
 app.include_router(admin.router)
+app.include_router(assistant.router)
 
 
 @app.get("/api/health")

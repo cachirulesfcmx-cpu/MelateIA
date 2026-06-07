@@ -1,0 +1,16 @@
+{
+  "name": "MelateAI Pro",
+  "short_name": "MelateAI",
+  "description": "Análisis predictivo y estadístico de Melate, Revancha, Melate Retro y Revanchita.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#06060a",
+  "theme_color": "#0a0a0f",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

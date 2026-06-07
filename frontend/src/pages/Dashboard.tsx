@@ -156,6 +156,9 @@ export default function Dashboard() {
           <GlassButton full variant="ghost" size="lg" onClick={() => nav("/rendimiento")}>
             📊 Rendimiento y evolución de la IA
           </GlassButton>
+          <GlassButton full variant="ghost" size="lg" onClick={() => nav("/asistente")}>
+            🤖 Asistente IA
+          </GlassButton>
         </div>
       )}
 

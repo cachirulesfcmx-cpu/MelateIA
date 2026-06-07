@@ -114,3 +114,12 @@ class LearningLog(Base):
     weight = Column(Float, default=1.0)
     average_hits = Column(Float, default=0.0)
     created_at = Column(DateTime, default=utcnow, index=True)
+
+
+class RateLimit(Base):
+    """Lightweight DB-backed rate limiting (works across serverless instances)."""
+    __tablename__ = "rate_limit"
+
+    id = Column(Integer, primary_key=True, index=True)
+    bucket = Column(String, index=True, nullable=False)
+    created_at = Column(DateTime, default=utcnow, index=True)

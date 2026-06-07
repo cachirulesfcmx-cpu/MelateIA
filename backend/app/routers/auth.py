@@ -1,5 +1,5 @@
 """Authentication endpoints."""
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
@@ -13,12 +13,14 @@ from ..auth import (
     hash_password, verify_password, create_access_token, get_current_user,
     create_reset_token, verify_reset_token,
 )
+from ..security import enforce_rate_limit, client_ip
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 @router.post("/register", response_model=Token)
-def register(payload: UserCreate, db: Session = Depends(get_db)):
+def register(payload: UserCreate, request: Request, db: Session = Depends(get_db)):
+    enforce_rate_limit(db, f"register:{client_ip(request)}", limit=10, window_seconds=3600)
     existing = db.query(User).filter(User.email == payload.email.lower()).first()
     if existing:
         raise HTTPException(status_code=400, detail="El email ya está registrado")
@@ -35,7 +37,9 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=Token)
-def login(payload: UserLogin, db: Session = Depends(get_db)):
+def login(payload: UserLogin, request: Request, db: Session = Depends(get_db)):
+    enforce_rate_limit(db, f"login:{payload.email.lower()}", limit=10, window_seconds=300)
+    enforce_rate_limit(db, f"login-ip:{client_ip(request)}", limit=30, window_seconds=300)
     user = db.query(User).filter(User.email == payload.email.lower()).first()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
@@ -69,7 +73,8 @@ def change_password(payload: ChangePassword, user: User = Depends(get_current_us
 
 
 @router.post("/forgot-password")
-def forgot_password(payload: ForgotPassword, db: Session = Depends(get_db)):
+def forgot_password(payload: ForgotPassword, request: Request, db: Session = Depends(get_db)):
+    enforce_rate_limit(db, f"forgot:{payload.email.lower()}", limit=5, window_seconds=900)
     """Issue a password-reset token.
 
     No email service is configured in this deployment, so the token is returned

@@ -147,8 +147,14 @@ export default function Profile() {
         <GlassButton full variant="ghost" size="lg" onClick={() => nav("/estimador")}>
           💰 Estimador de ganancias
         </GlassButton>
+        <GlassButton full variant="ghost" size="lg" onClick={() => nav("/asistente")}>
+          🤖 Asistente IA
+        </GlassButton>
         <GlassButton full variant="outline" size="lg" onClick={() => setPwOpen(true)}>
           🔑 Cambiar contraseña
+        </GlassButton>
+        <GlassButton full variant="ghost" size="lg" onClick={() => nav("/responsable")}>
+          ℹ️ Juego responsable e info
         </GlassButton>
         <GlassButton full variant="danger" size="lg" onClick={doLogout}>
           Cerrar sesión
