@@ -102,6 +102,19 @@ def _create_draw(db, user, game_type, numbers, draw_number, draw_date, additiona
     db.refresh(draw)
     ev = evaluate_new_draw(db, draw)
     db.refresh(draw)
+    # push notifications to users whose predictions hit
+    try:
+        from ..push_util import notify_user, push_enabled
+        if push_enabled():
+            game_label = get_game(game_type).label
+            for h in ev.get("new_hits", []):
+                notify_user(db, h["user_id"], {
+                    "title": f"🎯 ¡{h['hits']} aciertos en {game_label}!",
+                    "body": f"Tu predicción ({h['strategy']}) acertó {h['hits']} números del sorteo #{draw.draw_number}.",
+                    "url": "/historial",
+                })
+    except Exception:
+        pass
     return draw, ev
 
 

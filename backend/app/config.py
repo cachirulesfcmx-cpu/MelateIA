@@ -40,5 +40,10 @@ class Settings(BaseSettings):
     # Rate limiting
     rate_limit_enabled: bool = True
 
+    # Web Push (VAPID). Leave empty to disable push notifications.
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    vapid_subject: str = "mailto:no-reply@melastia.com"
+
 
 settings = Settings()

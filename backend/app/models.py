@@ -123,3 +123,15 @@ class RateLimit(Base):
     id = Column(Integer, primary_key=True, index=True)
     bucket = Column(String, index=True, nullable=False)
     created_at = Column(DateTime, default=utcnow, index=True)
+
+
+class PushSubscription(Base):
+    """Web Push subscription for notifications."""
+    __tablename__ = "push_subscriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    endpoint = Column(Text, unique=True, nullable=False)
+    p256dh = Column(String, nullable=False)
+    auth = Column(String, nullable=False)
+    created_at = Column(DateTime, default=utcnow)

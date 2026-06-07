@@ -6,6 +6,7 @@ import { useToast } from "../context/ToastContext";
 import { PageHeader } from "../components/AppLayout";
 import { GlassCard, GlassButton, Spinner, SectionTitle } from "../components/ui";
 import { LiquidModal } from "../components/LiquidModal";
+import { pushSupported, isSubscribed, enableNotifications, disableNotifications, sendTestNotification } from "../push";
 import type { ProfileStats } from "../api/types";
 
 function ChangePasswordModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -56,11 +57,38 @@ interface PerfRow {
 
 export default function Profile() {
   const { user, logout } = useAuth();
+  const { notify } = useToast();
   const nav = useNavigate();
   const [stats, setStats] = useState<ProfileStats | null>(null);
   const [perf, setPerf] = useState<PerfRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [pwOpen, setPwOpen] = useState(false);
+  const [notifOn, setNotifOn] = useState(false);
+  const [notifBusy, setNotifBusy] = useState(false);
+
+  useEffect(() => {
+    if (pushSupported()) isSubscribed().then(setNotifOn).catch(() => {});
+  }, []);
+
+  async function toggleNotif() {
+    setNotifBusy(true);
+    try {
+      if (notifOn) {
+        await disableNotifications();
+        setNotifOn(false);
+        notify("Notificaciones desactivadas", "info");
+      } else {
+        await enableNotifications();
+        setNotifOn(true);
+        const n = await sendTestNotification();
+        notify(n > 0 ? "Notificaciones activadas ✦" : "Activadas (sin envío de prueba)", "success");
+      }
+    } catch (err) {
+      notify((err as Error).message, "error");
+    } finally {
+      setNotifBusy(false);
+    }
+  }
 
   useEffect(() => {
     Promise.all([
@@ -150,6 +178,11 @@ export default function Profile() {
         <GlassButton full variant="ghost" size="lg" onClick={() => nav("/asistente")}>
           🤖 Asistente IA
         </GlassButton>
+        {pushSupported() && (
+          <GlassButton full variant={notifOn ? "outline" : "ghost"} size="lg" onClick={toggleNotif} disabled={notifBusy}>
+            {notifBusy ? "…" : notifOn ? "🔔 Notificaciones activadas (tocar para desactivar)" : "🔕 Activar notificaciones"}
+          </GlassButton>
+        )}
         <GlassButton full variant="outline" size="lg" onClick={() => setPwOpen(true)}>
           🔑 Cambiar contraseña
         </GlassButton>
