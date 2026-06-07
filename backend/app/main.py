@@ -70,10 +70,22 @@ app = FastAPI(
     version="1.0.0",
 )
 
-origins = ["*"] if settings.cors_origins == "*" else [o.strip() for o in settings.cors_origins.split(",")]
+_KNOWN_ORIGINS = [
+    "https://melastia.com",
+    "https://www.melastia.com",
+    "https://melate-ia.vercel.app",
+]
+if settings.cors_origins == "*":
+    origins = ["*"]
+else:
+    origins = sorted({
+        *(o.strip() for o in settings.cors_origins.split(",") if o.strip()),
+        *_KNOWN_ORIGINS,
+    })
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
