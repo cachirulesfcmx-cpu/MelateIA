@@ -45,23 +45,28 @@ def generate_predictions(payload: PredictionGenerate, db: Session = Depends(get_
     model = get_model(payload.game_type, cfg.max_number, history)
     scorer = model.make_scorer(history)
 
-    # "Adaptativa" routes to the best-performing strategy learned by the bandit.
+    # "Adaptativa" = contextual bandit: route to the best strategy learned for
+    # the CURRENT regime, falling back to the global best, then the hybrid engine.
     effective = payload.strategy
     routed = None
+    ctx = None
     if payload.strategy == "adaptativa":
         from ..engine import bandit
-        weights = bandit.normalized_weights(db, payload.game_type)
-        concrete = {s: w for s, w in weights.items() if s in STRATEGIES and s != "adaptativa"}
-        # require some learning signal; otherwise fall back to the hybrid engine
-        effective = max(concrete, key=concrete.get) if concrete else "hibrida"
+        from ..engine.context import regime
+        ctx = regime(stats)
+        effective = bandit.best_strategy_for_context(db, payload.game_type, ctx)
+        if not effective:
+            weights = bandit.normalized_weights(db, payload.game_type)
+            concrete = {s: w for s, w in weights.items() if s in STRATEGIES and s != "adaptativa"}
+            effective = max(concrete, key=concrete.get) if concrete else "hibrida"
         routed = effective
 
     combos = generate(stats, effective, payload.count, ml_scorer=scorer)
     if payload.strategy == "adaptativa":
         for c in combos:
             c["strategy"] = "adaptativa"
-            c["explanation"] = f"Adaptativa (IA) → estrategia mejor evaluada: {STRATEGIES[effective]['label']}. " + c["explanation"]
-    return {"game_type": payload.game_type, "strategy": payload.strategy, "combos": combos, "routed_to": routed}
+            c["explanation"] = f"Adaptativa (IA · régimen {ctx}) → estrategia mejor evaluada: {STRATEGIES[effective]['label']}. " + c["explanation"]
+    return {"game_type": payload.game_type, "strategy": payload.strategy, "combos": combos, "routed_to": routed, "context": ctx}
 
 
 @router.post("/save", response_model=PredictionOut)

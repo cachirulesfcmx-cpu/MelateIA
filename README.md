@@ -19,9 +19,15 @@ proveedor, devuelve el token directamente (modo demo).
 - SMTP: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM`.
 - `APP_URL` para construir el enlace (por defecto la URL de producción).
 
-Desplegada en **Vercel** (frontend estático + función serverless FastAPI) con base de
-datos **PostgreSQL en Supabase** (esquema aislado `melateai`). Variables de entorno de
-producción: `DATABASE_URL` (pooler de Supabase, IPv4), `DB_SCHEMA=melateai`, `SECRET_KEY`.
+**Arquitectura en producción:** frontend estático en **Vercel** (`melastia.com`) que
+consume el backend **FastAPI en Railway** (servidor persistente con el stack ML real:
+**XGBoost** / scikit-learn), y base de datos **PostgreSQL en Supabase** (esquema aislado
+`melateai`). El frontend apunta al backend vía `VITE_API_URL`. *(El proyecto también
+puede correr 100% en Vercel serverless con el motor heurístico — ver `vercel.json`.)*
+
+Extras: email de recuperación (**Resend**, dominio verificado), **asistente IA (Claude)**,
+**notificaciones push** (VAPID), **rate-limiting**, **PWA instalable**, y un **bandit
+contextual** que enruta la estrategia "Adaptativa" según el régimen actual de los sorteos.
 
 > ⚠️ **Aviso importante:** Melate es un juego de **azar**. Ninguna IA puede garantizar
 > premios. MelateAI Pro genera combinaciones **estadísticamente optimizadas**, registra

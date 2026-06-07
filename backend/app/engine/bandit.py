@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from ..models import ModelPerformance, LearningLog
+from ..models import ModelPerformance, LearningLog, StrategyContextPerf
 
 
 REWARD_TABLE = {0: -0.05, 1: -0.02, 2: 0.15, 3: 0.5, 4: 1.5, 5: 4.0, 6: 10.0}
@@ -53,5 +53,52 @@ def update_on_result(db: Session, strategy: str, game_type: str, hits: int) -> M
 
 def normalized_weights(db: Session, game_type: str) -> dict[str, float]:
     rows = db.query(ModelPerformance).filter(ModelPerformance.game_type == game_type).all()
+    total = sum(r.weight for r in rows) or 1.0
+    return {r.strategy: round(r.weight / total, 4) for r in rows}
+
+
+# ---------- contextual bandit ----------
+def update_contextual(db: Session, strategy: str, game_type: str, context: str, hits: int) -> None:
+    row = (
+        db.query(StrategyContextPerf)
+        .filter(
+            StrategyContextPerf.strategy == strategy,
+            StrategyContextPerf.game_type == game_type,
+            StrategyContextPerf.context == context,
+        )
+        .first()
+    )
+    if row is None:
+        row = StrategyContextPerf(strategy=strategy, game_type=game_type, context=context, weight=1.0)
+        db.add(row)
+        db.flush()
+    row.total_predictions = (row.total_predictions or 0) + 1
+    row.total_hits = (row.total_hits or 0) + hits
+    row.average_hits = round(row.total_hits / row.total_predictions, 4)
+    reward = REWARD_TABLE.get(hits, 0.0)
+    new_weight = row.weight * (1 - ALPHA) + (row.weight + reward) * ALPHA
+    row.weight = max(0.1, min(8.0, round(new_weight, 4)))
+    db.flush()
+
+
+def best_strategy_for_context(db: Session, game_type: str, context: str, min_signal: int = 2) -> str | None:
+    """Return the best-weighted strategy for a context, if it has enough signal."""
+    rows = (
+        db.query(StrategyContextPerf)
+        .filter(StrategyContextPerf.game_type == game_type, StrategyContextPerf.context == context)
+        .all()
+    )
+    rows = [r for r in rows if r.strategy != "adaptativa" and (r.total_predictions or 0) >= min_signal]
+    if not rows:
+        return None
+    return max(rows, key=lambda r: r.weight).strategy
+
+
+def contextual_weights(db: Session, game_type: str, context: str) -> dict[str, float]:
+    rows = (
+        db.query(StrategyContextPerf)
+        .filter(StrategyContextPerf.game_type == game_type, StrategyContextPerf.context == context)
+        .all()
+    )
     total = sum(r.weight for r in rows) or 1.0
     return {r.strategy: round(r.weight / total, 4) for r in rows}

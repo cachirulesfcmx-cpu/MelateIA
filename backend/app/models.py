@@ -135,3 +135,19 @@ class PushSubscription(Base):
     p256dh = Column(String, nullable=False)
     auth = Column(String, nullable=False)
     created_at = Column(DateTime, default=utcnow)
+
+
+class StrategyContextPerf(Base):
+    """Per-context (regime) reinforcement weights for the contextual bandit."""
+    __tablename__ = "strategy_context_perf"
+    __table_args__ = (UniqueConstraint("strategy", "game_type", "context", name="uq_strategy_game_context"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    strategy = Column(String, nullable=False)
+    game_type = Column(String, index=True, nullable=False)
+    context = Column(String, index=True, nullable=False)
+    total_predictions = Column(Integer, default=0)
+    total_hits = Column(Integer, default=0)
+    average_hits = Column(Float, default=0.0)
+    weight = Column(Float, default=1.0)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)

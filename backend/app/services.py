@@ -83,6 +83,16 @@ def evaluate_new_draw(db: Session, draw: Draw) -> dict:
         )
         .all()
     )
+
+    # Contextual bandit: regime the pending predictions were "betting in" = the
+    # regime defined by the draws BEFORE this new official result.
+    from .engine.context import regime
+    from .engine.features import GameStats
+    from .engine.game_config import get_game
+    cfg = get_game(draw.game_type)
+    prior = [r["numbers"] for r in load_draw_rows(db, draw.game_type) if r["draw_number"] != draw.draw_number]
+    ctx = regime(GameStats(max_number=cfg.max_number, draws=prior, pick=cfg.pick))
+
     new_hits = []
     users_affected = set()
     evaluated = 0
@@ -97,6 +107,7 @@ def evaluate_new_draw(db: Session, draw: Draw) -> dict:
         result = evaluate_prediction_against_draw(db, pred, draw)
         if result is None:
             continue
+        bandit.update_contextual(db, pred.strategy, draw.game_type, ctx, result.hits)
         evaluated += 1
         users_affected.add(pred.user_id)
         if result.hits >= 2:
