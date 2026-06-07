@@ -9,13 +9,14 @@ import { NumberBall } from "../components/NumberBall";
 import { useToast } from "../context/ToastContext";
 import { sharePrediction } from "../shareImage";
 import type { GeneratedCombo } from "../api/types";
+import { getDefaultGame } from "../settings";
 
 export default function Predictions() {
   const games = useGames();
   const strategies = useStrategies();
   const { notify } = useToast();
 
-  const [game, setGame] = useState("melate");
+  const [game, setGame] = useState(getDefaultGame());
   const [strategy, setStrategy] = useState("hibrida");
   const [count, setCount] = useState(5);
   const [combos, setCombos] = useState<GeneratedCombo[]>([]);

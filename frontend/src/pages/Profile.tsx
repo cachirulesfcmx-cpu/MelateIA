@@ -6,6 +6,9 @@ import { useToast } from "../context/ToastContext";
 import { PageHeader } from "../components/AppLayout";
 import { GlassCard, GlassButton, Spinner, SectionTitle } from "../components/ui";
 import { LiquidModal } from "../components/LiquidModal";
+import { GameSelector } from "../components/GameSelector";
+import { useGames } from "../hooks";
+import { getDefaultGame, setDefaultGame } from "../settings";
 import { pushSupported, isSubscribed, enableNotifications, disableNotifications, sendTestNotification } from "../push";
 import type { ProfileStats } from "../api/types";
 
@@ -65,6 +68,28 @@ export default function Profile() {
   const [pwOpen, setPwOpen] = useState(false);
   const [notifOn, setNotifOn] = useState(false);
   const [notifBusy, setNotifBusy] = useState(false);
+  const [delOpen, setDelOpen] = useState(false);
+  const games = useGames();
+  const [favGame, setFavGame] = useState(getDefaultGame());
+
+  async function exportData() {
+    try {
+      await api.download("/auth/export", "mis-datos-melateai.json");
+      notify("Datos exportados", "success");
+    } catch (err) {
+      notify((err as Error).message, "error");
+    }
+  }
+  async function deleteAccount() {
+    try {
+      await api.del("/auth/me");
+      notify("Cuenta eliminada", "info");
+      logout();
+      nav("/login");
+    } catch (err) {
+      notify((err as Error).message, "error");
+    }
+  }
 
   useEffect(() => {
     if (pushSupported()) isSubscribed().then(setNotifOn).catch(() => {});
@@ -166,6 +191,11 @@ export default function Profile() {
         </div>
       )}
 
+      <GlassCard className="mb-5">
+        <SectionTitle title="⚙️ Ajustes" subtitle="Juego favorito (se abre por defecto)" />
+        <GameSelector games={games} value={favGame} onChange={(g) => { setFavGame(g); setDefaultGame(g); notify("Juego favorito actualizado", "success"); }} />
+      </GlassCard>
+
       <div className="space-y-3">
         {user?.is_admin && (
           <GlassButton full size="lg" onClick={() => nav("/admin/usuarios")}>
@@ -189,12 +219,23 @@ export default function Profile() {
         <GlassButton full variant="ghost" size="lg" onClick={() => nav("/responsable")}>
           ℹ️ Juego responsable e info
         </GlassButton>
+        <div className="grid grid-cols-2 gap-3">
+          <GlassButton variant="outline" onClick={exportData}>⬇ Exportar datos</GlassButton>
+          <GlassButton variant="danger" onClick={() => setDelOpen(true)}>Eliminar cuenta</GlassButton>
+        </div>
         <GlassButton full variant="danger" size="lg" onClick={doLogout}>
           Cerrar sesión
         </GlassButton>
       </div>
 
       <ChangePasswordModal open={pwOpen} onClose={() => setPwOpen(false)} />
+      <LiquidModal open={delOpen} onClose={() => setDelOpen(false)} title="Eliminar cuenta">
+        <div className="space-y-4">
+          <p className="text-sm text-white/70">Esto borra tu cuenta y tus predicciones de forma permanente. Los sorteos oficiales que hayas cargado se conservan. Esta acción no se puede deshacer.</p>
+          <GlassButton full variant="danger" size="lg" onClick={deleteAccount}>Sí, eliminar mi cuenta</GlassButton>
+          <GlassButton full variant="ghost" onClick={() => setDelOpen(false)}>Cancelar</GlassButton>
+        </div>
+      </LiquidModal>
 
       <p className="text-center text-[11px] text-white/30 mt-6">MelateAI Pro · v1.0 · Juega con responsabilidad</p>
     </>

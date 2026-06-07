@@ -69,9 +69,26 @@ export default function AdminUsers() {
     }
   }
 
+  const [editName, setEditName] = useState("");
+  const [editAdmin, setEditAdmin] = useState(false);
+
   async function openDetail(id: number) {
     try {
-      setDetail(await api.get<AdminUser>(`/admin/users/${id}`));
+      const d = await api.get<AdminUser>(`/admin/users/${id}`);
+      setDetail(d);
+      setEditName(d.name);
+      setEditAdmin(d.is_admin);
+    } catch (err) {
+      notify((err as Error).message, "error");
+    }
+  }
+
+  async function saveEdit(id: number) {
+    try {
+      await api.patch<AdminUser>(`/admin/users/${id}`, { name: editName, is_admin: editAdmin });
+      notify("Usuario actualizado ✦", "success");
+      setDetail(null);
+      load();
     } catch (err) {
       notify((err as Error).message, "error");
     }
@@ -179,6 +196,16 @@ export default function AdminUsers() {
         {detail && (
           <div className="space-y-4">
             <p className="text-xs text-white/50">{detail.email} · desde {new Date(detail.created_at).toLocaleDateString()}</p>
+
+            <div className="bg-white/[0.04] rounded-2xl p-3 space-y-2">
+              <p className="text-[11px] text-white/50">✏️ Editar</p>
+              <input value={editName} onChange={(e) => setEditName(e.target.value)} className="glass-input w-full !py-2 text-sm" placeholder="Nombre" />
+              <label className="flex items-center gap-2 text-sm text-white/70 px-1">
+                <input type="checkbox" checked={editAdmin} onChange={(e) => setEditAdmin(e.target.checked)} className="accent-cyan-400 w-4 h-4" />
+                Administrador
+              </label>
+              <GlassButton full variant="ghost" onClick={() => saveEdit(detail.id)} className="!py-2">Guardar cambios</GlassButton>
+            </div>
             <div className="grid grid-cols-4 gap-2">
               <Mini label="Predicc." value={detail.total_predictions} />
               <Mini label="Eval." value={detail.evaluated_predictions} />

@@ -257,6 +257,24 @@ def _parse_date(s):
     return None
 
 
+@router.get("/pairs")
+def hot_pairs(game_type: str, limit: int = 12, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Most frequently co-occurring number pairs."""
+    if game_type not in GAME_KEYS:
+        raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
+    cfg = get_game(game_type)
+    rows = load_draw_rows(db, game_type)
+    if not rows:
+        return {"game_type": game_type, "pairs": []}
+    stats = GameStats(max_number=cfg.max_number, draws=[r["numbers"] for r in rows], pick=cfg.pick)
+    ranked = sorted(stats.pair_freq.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    return {
+        "game_type": game_type,
+        "total_draws": len(rows),
+        "pairs": [{"a": a, "b": b, "count": c} for (a, b), c in ranked],
+    }
+
+
 @router.get("/number-tracker")
 def number_tracker(game_type: str, window: int = 50, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Per-number hot/cold ranking + appearance timer (gap in draws, last date,

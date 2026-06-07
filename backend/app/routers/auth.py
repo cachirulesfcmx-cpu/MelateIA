@@ -113,6 +113,41 @@ def reset_password(payload: ResetPassword, db: Session = Depends(get_db)):
     return {"message": "Contraseña restablecida. Ya puedes iniciar sesión."}
 
 
+@router.get("/export")
+def export_my_data(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from ..engine.data_engine import str_to_numbers
+    preds = db.query(Prediction).filter(Prediction.user_id == user.id).order_by(Prediction.created_at.asc()).all()
+    return {
+        "user": {"id": user.id, "name": user.name, "email": user.email, "is_admin": user.is_admin,
+                 "created_at": user.created_at.isoformat() if user.created_at else None},
+        "predictions": [
+            {
+                "id": p.id, "game_type": p.game_type, "strategy": p.strategy,
+                "numbers": str_to_numbers(p.numbers), "score": p.score, "status": p.status,
+                "used": p.used, "created_at": p.created_at.isoformat() if p.created_at else None,
+                "results": [
+                    {"draw_id": r.draw_id, "hits": r.hits,
+                     "matched": str_to_numbers(r.matched_numbers) if r.matched_numbers else [],
+                     "evaluated_at": r.evaluated_at.isoformat() if r.evaluated_at else None}
+                    for r in p.results
+                ],
+            }
+            for p in preds
+        ],
+    }
+
+
+@router.delete("/me")
+def delete_my_account(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from ..models import PushSubscription
+    # keep historical official draws this user added, just detach authorship
+    db.query(Draw).filter(Draw.created_by == user.id).update({Draw.created_by: None})
+    db.query(PushSubscription).filter(PushSubscription.user_id == user.id).delete()
+    db.delete(user)  # cascades the user's predictions + results
+    db.commit()
+    return {"deleted": True}
+
+
 @router.get("/me", response_model=ProfileStats)
 def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     total_predictions = db.query(Prediction).filter(Prediction.user_id == user.id).count()

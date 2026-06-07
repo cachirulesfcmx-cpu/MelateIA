@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import User, Prediction, PredictionResult, Draw
 from ..auth import get_current_admin, hash_password
-from ..schemas import AdminSetPassword, AdminCreateUser
+from ..schemas import AdminSetPassword, AdminCreateUser, AdminUpdateUser
 from ..engine.data_engine import str_to_numbers
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -145,6 +145,22 @@ def delete_user(user_id: int, db: Session = Depends(get_db), admin: User = Depen
     db.delete(user)  # cascades the user's predictions + their results
     db.commit()
     return {"deleted": user_id}
+
+
+@router.patch("/users/{user_id}")
+def update_user(user_id: int, payload: AdminUpdateUser, db: Session = Depends(get_db), admin: User = Depends(get_current_admin)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    if payload.name is not None:
+        user.name = payload.name.strip()
+    if payload.is_admin is not None:
+        if user.id == admin.id and payload.is_admin is False:
+            raise HTTPException(status_code=400, detail="No puedes quitarte tu propio rol de administrador")
+        user.is_admin = payload.is_admin
+    db.commit()
+    db.refresh(user)
+    return _user_stats(db, user)
 
 
 @router.post("/users/{user_id}/reset-password")

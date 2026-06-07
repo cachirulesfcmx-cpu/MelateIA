@@ -9,6 +9,7 @@ import { BarList, VBars, AreaChart } from "../components/Charts";
 import { NumberHeatmap, HeatLegend } from "../components/NumberHeatmap";
 import { NumberBall } from "../components/NumberBall";
 import { useToast } from "../context/ToastContext";
+import { getDefaultGame } from "../settings";
 
 interface Probs {
   backend: string;
@@ -27,10 +28,13 @@ interface Strat {
   normalized_weight: number;
 }
 interface EvoPoint { i: number; cum_avg_hits: number; weight: number; strategy: string; hits: number; }
+interface CtxBlock { context: string; strategies: { strategy: string; weight: number; normalized: number; evaluations: number; average_hits: number }[]; }
 interface Analytics {
   strategies: Strat[];
   evolution: EvoPoint[];
   learning_events: number;
+  current_context: string | null;
+  contextual: CtxBlock[];
   user: {
     hits_distribution: Record<string, number>;
     timeline: { date: string; avg_hits: number; count: number }[];
@@ -47,7 +51,7 @@ export default function Analytics() {
   const games = useGames();
   const nav = useNavigate();
   const { notify } = useToast();
-  const [game, setGame] = useState("melate");
+  const [game, setGame] = useState(getDefaultGame());
   const [data, setData] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -153,6 +157,24 @@ export default function Analytics() {
               </>
             )}
           </GlassCard>
+
+          {/* Contextual learning */}
+          {data.contextual.length > 0 && (
+            <GlassCard>
+              <SectionTitle title="🧭 Aprendizaje contextual" subtitle={`Régimen actual: ${data.current_context ?? "—"}`} />
+              <div className="space-y-3">
+                {data.contextual.map((cb) => (
+                  <div key={cb.context} className={`rounded-2xl p-3 ${cb.context === data.current_context ? "bg-gradient-to-br from-violet-600/25 to-cyan-500/15 border border-white/15" : "bg-white/[0.04]"}`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold">{cb.context}{cb.context === data.current_context && <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/25 text-cyan-200">ACTUAL</span>}</span>
+                      <span className="text-[10px] text-white/40">mejor: {cb.strategies[0]?.strategy}</span>
+                    </div>
+                    <BarList items={cb.strategies.slice(0, 4).map((s) => ({ label: s.strategy.replace("_", " "), value: s.normalized * 100, sub: `${s.evaluations} eval` }))} format={(v) => `${v.toFixed(0)}%`} accent="from-fuchsia-500 to-cyan-400" />
+                  </div>
+                ))}
+              </div>
+            </GlassCard>
+          )}
 
           {/* AI learning over time */}
           <GlassCard>

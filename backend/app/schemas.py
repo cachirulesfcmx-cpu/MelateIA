@@ -59,6 +59,11 @@ class AdminCreateUser(BaseModel):
     is_admin: bool = False
 
 
+class AdminUpdateUser(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    is_admin: Optional[bool] = None
+
+
 class ProfileStats(BaseModel):
     user: UserOut
     total_predictions: int

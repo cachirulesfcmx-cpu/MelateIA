@@ -141,3 +141,35 @@ def test_score_combo(client):
     j = r.json()
     assert 0.0 <= j["score"] <= 1.0 and len(j["tips"]) >= 1 and len(j["number_probs"]) == 6
     assert client.post("/api/predictions/score", headers=uh, json={"game_type": "melate", "numbers": [1, 1, 3, 4, 5, 6]}).status_code == 400
+
+
+def test_hot_pairs(client):
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    r = client.get("/api/draws/pairs?game_type=melate", headers=uh)
+    assert r.status_code == 200
+    pairs = r.json()["pairs"]
+    assert len(pairs) > 0 and pairs[0]["a"] < pairs[0]["b"] and pairs[0]["count"] >= 1
+
+
+def test_admin_edit_user(client):
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+    c = client.post("/api/admin/users", headers=ah, json={"name": "Edit Me", "email": "edit@x.com", "password": "abc123"})
+    uid = c.json()["id"]
+    r = client.patch(f"/api/admin/users/{uid}", headers=ah, json={"name": "Edited", "is_admin": True})
+    assert r.status_code == 200 and r.json()["name"] == "Edited" and r.json()["is_admin"] is True
+    client.delete(f"/api/admin/users/{uid}", headers=ah)
+
+
+def test_account_export_and_delete(client):
+    r = client.post("/api/auth/register", json={"name": "Bye", "email": "bye@x.com", "password": "pass1234"})
+    h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    exp = client.get("/api/auth/export", headers=h)
+    assert exp.status_code == 200 and exp.json()["user"]["email"] == "bye@x.com"
+    assert client.delete("/api/auth/me", headers=h).status_code == 200
+    assert client.post("/api/auth/login", json={"email": "bye@x.com", "password": "pass1234"}).status_code == 401
+
+
+def test_analytics_contextual_fields(client):
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    an = client.get("/api/ml/analytics?game_type=melate", headers=uh).json()
+    assert "current_context" in an and "contextual" in an

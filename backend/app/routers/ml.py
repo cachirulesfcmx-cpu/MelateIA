@@ -4,7 +4,9 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import ModelPerformance, User, Prediction, PredictionResult, LearningLog
+from ..models import ModelPerformance, User, Prediction, PredictionResult, LearningLog, StrategyContextPerf
+from ..engine.context import regime
+from ..engine.features import GameStats
 from ..auth import get_current_user
 from ..engine.game_config import GAME_KEYS, get_game
 from ..engine.strategies import STRATEGIES
@@ -181,6 +183,30 @@ def analytics(game_type: str | None = None, db: Session = Depends(get_db), user:
             "hits": lg.hits or 0,
         })
 
+    # ---- contextual bandit (regime) ----
+    current_context = None
+    contextual = []
+    if game_type:
+        cfg = get_game(game_type)
+        seqs = [r["numbers"] for r in load_draw_rows(db, game_type)]
+        if seqs:
+            current_context = regime(GameStats(max_number=cfg.max_number, draws=seqs, pick=cfg.pick))
+        crows = db.query(StrategyContextPerf).filter(StrategyContextPerf.game_type == game_type).all()
+        by_ctx: dict[str, list] = {}
+        for r in crows:
+            by_ctx.setdefault(r.context, []).append(r)
+        for ctx, rs in sorted(by_ctx.items()):
+            tot = sum(x.weight for x in rs) or 1.0
+            contextual.append({
+                "context": ctx,
+                "strategies": sorted(
+                    [{"strategy": x.strategy, "weight": round(x.weight, 3),
+                      "normalized": round(x.weight / tot, 4), "evaluations": x.total_predictions,
+                      "average_hits": x.average_hits} for x in rs],
+                    key=lambda s: -s["weight"],
+                ),
+            })
+
     total_eval = len(results)
     total_hits = sum(r.hits for r, _ in results)
     return {
@@ -188,6 +214,8 @@ def analytics(game_type: str | None = None, db: Session = Depends(get_db), user:
         "strategies": strategies,
         "evolution": evolution,
         "learning_events": len(logs),
+        "current_context": current_context,
+        "contextual": contextual,
         "user": {
             "hits_distribution": dist,
             "timeline": timeline,

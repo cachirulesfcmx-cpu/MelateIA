@@ -11,6 +11,7 @@ import { FloatingActionButton } from "../components/LiquidModal";
 import { useToast } from "../context/ToastContext";
 import { useAuth } from "../context/AuthContext";
 import type { Draw, DrawStats } from "../api/types";
+import { getDefaultGame } from "../settings";
 
 interface TrackerNum {
   number: number;
@@ -37,9 +38,10 @@ export default function Draws() {
   const { user } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const [game, setGame] = useState("melate");
+  const [game, setGame] = useState(getDefaultGame());
   const [stats, setStats] = useState<DrawStats | null>(null);
   const [tracker, setTracker] = useState<Tracker | null>(null);
+  const [pairs, setPairs] = useState<{ a: number; b: number; count: number }[]>([]);
   const [draws, setDraws] = useState<Draw[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"balls" | "table">("balls");
@@ -50,14 +52,16 @@ export default function Draws() {
   async function load() {
     setLoading(true);
     try {
-      const [s, t, d] = await Promise.all([
+      const [s, t, d, pr] = await Promise.all([
         api.get<DrawStats>(`/draws/stats?game_type=${game}`),
         api.get<Tracker>(`/draws/number-tracker?game_type=${game}`),
         api.get<{ draws: Draw[] }>(`/draws?game_type=${game}&limit=60`),
+        api.get<{ pairs: { a: number; b: number; count: number }[] }>(`/draws/pairs?game_type=${game}`),
       ]);
       setStats(s);
       setTracker(t);
       setDraws(d.draws);
+      setPairs(pr.pairs);
     } finally {
       setLoading(false);
     }
@@ -191,6 +195,25 @@ export default function Draws() {
                   </>
                 );
               })()}
+            </GlassCard>
+          )}
+
+          {/* Hot pairs */}
+          {pairs.length > 0 && (
+            <GlassCard>
+              <SectionTitle title="🔗 Pares más frecuentes" subtitle="Números que más han salido juntos" />
+              <div className="space-y-2">
+                {pairs.slice(0, 8).map((p, i) => (
+                  <div key={`${p.a}-${p.b}`} className="flex items-center gap-3 bg-white/[0.04] rounded-2xl px-3 py-2">
+                    <span className="w-4 text-[11px] text-white/40 tnum">{i + 1}</span>
+                    <NumberBall n={p.a} size="sm" grad={theme.grad} />
+                    <span className="text-white/30">+</span>
+                    <NumberBall n={p.b} size="sm" grad={theme.grad} />
+                    <div className="flex-1" />
+                    <span className="text-sm font-bold tnum text-white/80">{p.count}×</span>
+                  </div>
+                ))}
+              </div>
             </GlassCard>
           )}
 

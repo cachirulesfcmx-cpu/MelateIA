@@ -10,6 +10,7 @@ import { NumberBall } from "../components/NumberBall";
 import { HeatLegend } from "../components/NumberHeatmap";
 import { useToast } from "../context/ToastContext";
 import { sharePrediction } from "../shareImage";
+import { getDefaultGame } from "../settings";
 
 interface ScoreRes {
   score: number;
@@ -22,7 +23,7 @@ export default function Builder() {
   const games = useGames();
   const nav = useNavigate();
   const { notify } = useToast();
-  const [game, setGame] = useState("melate");
+  const [game, setGame] = useState(getDefaultGame());
   const [intensity, setIntensity] = useState<Record<number, number>>({});
   const [selected, setSelected] = useState<number[]>([]);
   const [res, setRes] = useState<ScoreRes | null>(null);
