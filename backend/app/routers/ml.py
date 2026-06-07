@@ -69,6 +69,34 @@ def performance(game_type: str | None = None, db: Session = Depends(get_db), use
     }
 
 
+@router.get("/probabilities")
+def probabilities(game_type: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Per-number probability of appearing in the next draw, from the trained
+    ML model (XGBoost/GradientBoosting where available, heuristic otherwise)."""
+    if game_type not in GAME_KEYS:
+        raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
+    cfg = get_game(game_type)
+    history = [r["numbers"] for r in load_draw_rows(db, game_type)]
+    if len(history) < 30:
+        raise HTTPException(status_code=400, detail="Historial insuficiente")
+    model = get_model(game_type, cfg.max_number, history)
+    probs = model.probabilities(history)
+    mx = max(probs.values()) or 1.0
+    ranked = sorted(probs.items(), key=lambda kv: kv[1], reverse=True)
+    return {
+        "game_type": game_type,
+        "max_number": cfg.max_number,
+        "pick": cfg.pick,
+        "backend": model.backend,
+        "trained": model.trained,
+        "numbers": [
+            {"number": n, "prob": round(probs[n], 4), "rel": round(probs[n] / mx, 3)}
+            for n in range(1, cfg.max_number + 1)
+        ],
+        "top": [{"number": n, "prob": round(p, 4), "rel": round(p / mx, 3)} for n, p in ranked[: cfg.pick * 2]],
+    }
+
+
 @router.get("/analytics")
 def analytics(game_type: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Performance & AI-evolution analytics for charts.

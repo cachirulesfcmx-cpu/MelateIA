@@ -5,6 +5,7 @@ import { PageHeader } from "../components/AppLayout";
 import { GlassCard, GlassButton, Spinner, gameTheme, SectionTitle } from "../components/ui";
 import { GameSelector } from "../components/GameSelector";
 import { NumberBall } from "../components/NumberBall";
+import { NumberHeatmap, HeatLegend } from "../components/NumberHeatmap";
 import { AddDrawModal } from "../components/AddDrawModal";
 import { FloatingActionButton } from "../components/LiquidModal";
 import { useToast } from "../context/ToastContext";
@@ -173,6 +174,23 @@ export default function Draws() {
                   <RankRow key={t.number} idx={i + 1} num={t.number} variant="cold" value={t.recent} maxValue={Math.max(1, tracker.hot[0].recent)} sub={`${t.recent} apar.`} />
                 ))}
               </div>
+            </GlassCard>
+          )}
+
+          {/* Frequency heatmap */}
+          {stats.frequency && (
+            <GlassCard>
+              <SectionTitle title="🗺️ Mapa de calor de frecuencias" subtitle="Qué tan seguido ha salido cada número" />
+              {(() => {
+                const entries = Object.entries(stats.frequency).map(([k, v]) => ({ number: +k, count: v as number }));
+                const max = Math.max(1, ...entries.map((e) => e.count));
+                return (
+                  <>
+                    <NumberHeatmap items={entries.sort((a, b) => a.number - b.number).map((e) => ({ number: e.number, rel: e.count / max }))} />
+                    <HeatLegend />
+                  </>
+                );
+              })()}
             </GlassCard>
           )}
 

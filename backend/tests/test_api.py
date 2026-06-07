@@ -122,3 +122,13 @@ def test_assistant_status(client):
     uh = auth(client, "demo@melateai.pro", "demo1234")
     s = client.get("/api/assistant/status", headers=uh)
     assert s.status_code == 200 and "enabled" in s.json()
+
+
+def test_ml_probabilities(client):
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    p = client.get("/api/ml/probabilities?game_type=melate", headers=uh)
+    assert p.status_code == 200
+    j = p.json()
+    assert len(j["numbers"]) == 56
+    assert len(j["top"]) >= 6
+    assert all(0.0 <= n["rel"] <= 1.0 for n in j["numbers"])

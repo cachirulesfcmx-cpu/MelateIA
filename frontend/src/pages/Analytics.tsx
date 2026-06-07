@@ -6,7 +6,16 @@ import { PageHeader, Disclaimer } from "../components/AppLayout";
 import { GlassCard, GlassButton, Spinner, SectionTitle, gameTheme } from "../components/ui";
 import { GameSelector } from "../components/GameSelector";
 import { BarList, VBars, AreaChart } from "../components/Charts";
+import { NumberHeatmap, HeatLegend } from "../components/NumberHeatmap";
+import { NumberBall } from "../components/NumberBall";
 import { useToast } from "../context/ToastContext";
+
+interface Probs {
+  backend: string;
+  trained: boolean;
+  numbers: { number: number; prob: number; rel: number }[];
+  top: { number: number; prob: number; rel: number }[];
+}
 
 interface Strat {
   strategy: string;
@@ -42,6 +51,8 @@ export default function Analytics() {
   const [data, setData] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const [probs, setProbs] = useState<Probs | null>(null);
+  const [probsLoading, setProbsLoading] = useState(false);
   const [bt, setBt] = useState<{ strategy: string; avg: number; random: number; edge: number; best: number }[]>([]);
   const [btRunning, setBtRunning] = useState(false);
   const [btProgress, setBtProgress] = useState(0);
@@ -54,6 +65,21 @@ export default function Analytics() {
       setLoading(false);
     }
   }
+  async function loadProbs() {
+    setProbsLoading(true);
+    setProbs(null);
+    try {
+      setProbs(await api.get<Probs>(`/ml/probabilities?game_type=${game}`));
+    } catch {
+      /* insufficient history etc. */
+    } finally {
+      setProbsLoading(false);
+    }
+  }
+  useEffect(() => {
+    loadProbs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game]);
   useEffect(() => {
     load();
     setBt([]);
@@ -99,6 +125,35 @@ export default function Analytics() {
         <Spinner />
       ) : (
         <div className="space-y-5 animate-fade-in">
+          {/* ML per-number probabilities */}
+          <GlassCard glow>
+            <SectionTitle
+              title="🔮 Probabilidades del modelo IA"
+              subtitle={probs ? `Motor: ${probs.backend}${probs.trained ? "" : " (heurístico)"}` : "Probabilidad de aparición por número"}
+            />
+            {probsLoading ? (
+              <Spinner label="Calculando con el modelo…" />
+            ) : !probs ? (
+              <p className="text-center text-xs text-white/30 py-4">Sin datos suficientes.</p>
+            ) : (
+              <>
+                <p className="text-[11px] text-white/55 mb-2">Top {probs.top.length} números más probables (modelo):</p>
+                <div className="flex gap-1.5 flex-wrap justify-center mb-4">
+                  {probs.top.map((t, i) => (
+                    <div key={t.number} className="flex flex-col items-center">
+                      <NumberBall n={t.number} size="sm" variant="gold" index={i} />
+                      <span className="text-[9px] text-white/40 mt-0.5 tnum">{(t.prob * 100).toFixed(1)}%</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] text-white/55 mb-2">Mapa de calor (todos los números):</p>
+                <NumberHeatmap items={probs.numbers} highlight={probs.top.map((t) => t.number)} />
+                <HeatLegend />
+                <p className="text-[10px] text-white/35 mt-3 text-center">El modelo estima probabilidades relativas; la lotería sigue siendo azar.</p>
+              </>
+            )}
+          </GlassCard>
+
           {/* AI learning over time */}
           <GlassCard>
             <SectionTitle title="🧠 Evolución del aprendizaje" subtitle={`${data.learning_events} eventos de aprendizaje (refuerzo)`} />
