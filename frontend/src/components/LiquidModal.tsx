@@ -1,4 +1,5 @@
 import { ReactNode, useEffect } from "react";
+import { createPortal } from "react-dom";
 
 interface Props {
   open: boolean;
@@ -19,7 +20,7 @@ export function LiquidModal({ open, onClose, title, children }: Props) {
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-[90] flex items-end sm:items-center justify-center">
       <div
         className="absolute inset-0 bg-black/50 backdrop-blur-md animate-fade-in"
@@ -38,17 +39,19 @@ export function LiquidModal({ open, onClose, title, children }: Props) {
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
 export function FloatingActionButton({ onClick, label = "+" }: { onClick: () => void; label?: string }) {
-  return (
+  return createPortal(
     <button
       onClick={onClick}
       className="fixed right-5 bottom-28 z-40 w-14 h-14 rounded-full bg-gradient-to-br from-violet-600 to-cyan-500 shadow-glow flex items-center justify-center text-2xl font-light text-white active:scale-90 transition animate-float"
     >
       {label}
-    </button>
+    </button>,
+    document.body
   );
 }
