@@ -1,5 +1,5 @@
 const KEY = "melateai_default_game";
-const VALID = ["melate", "revancha", "melate_retro", "revanchita"];
+const VALID = ["melate", "revancha", "melate_retro", "revanchita", "chispazo", "tris"];
 
 export function getDefaultGame(): string {
   const v = localStorage.getItem(KEY);

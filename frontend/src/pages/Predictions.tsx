@@ -24,6 +24,7 @@ export default function Predictions() {
   const [saved, setSaved] = useState<Set<number>>(new Set());
 
   const theme = gameTheme(game);
+  const positional = games.find((g) => g.key === game)?.kind === "positional";
 
   async function generate() {
     setLoading(true);
@@ -116,7 +117,7 @@ export default function Predictions() {
           />
           <div className="space-y-3">
             {combos.map((c, i) => (
-              <ComboCard key={i} combo={c} gameType={game} grad={theme.grad} saved={saved.has(i)} onSave={() => save(c, i)} rank={i + 1} />
+              <ComboCard key={i} combo={c} gameType={game} grad={theme.grad} saved={saved.has(i)} onSave={() => save(c, i)} rank={i + 1} positional={positional} />
             ))}
           </div>
         </div>
@@ -132,6 +133,7 @@ function ComboCard({
   saved,
   onSave,
   rank,
+  positional,
 }: {
   combo: GeneratedCombo;
   gameType: string;
@@ -139,9 +141,11 @@ function ComboCard({
   saved: boolean;
   onSave: () => void;
   rank: number;
+  positional?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const pct = Math.round(combo.score * 100);
+  const f = combo.features as unknown as Record<string, number>;
   return (
     <GlassCard className="!p-4">
       <div className="flex items-center justify-between mb-3">
@@ -169,7 +173,10 @@ function ComboCard({
       </div>
       <div className="flex gap-2 flex-wrap justify-center py-1">
         {combo.numbers.map((n, idx) => (
-          <NumberBall key={n} n={n} grad={grad} index={idx} />
+          <div key={idx} className="flex flex-col items-center">
+            {positional && <span className="text-[9px] text-white/40 mb-0.5">P{idx + 1}</span>}
+            <NumberBall n={n} grad={grad} index={idx} />
+          </div>
         ))}
       </div>
       <button onClick={() => setOpen((o) => !o)} className="w-full mt-3 text-[11px] text-white/45 flex items-center justify-center gap-1">
@@ -178,14 +185,25 @@ function ComboCard({
       {open && (
         <div className="mt-2 animate-fade-in space-y-2">
           <p className="text-[11px] text-white/60 leading-relaxed">{combo.explanation}</p>
-          <div className="grid grid-cols-3 gap-2 text-center">
-            <Mini label="Suma" value={combo.features.sum} />
-            <Mini label="Par/Impar" value={`${combo.features.even}/${combo.features.odd}`} />
-            <Mini label="Primos" value={combo.features.primes} />
-            <Mini label="Rango" value={combo.features.range} />
-            <Mini label="Consec." value={combo.features.consecutive} />
-            <Mini label="Popular." value={`${Math.round(combo.features.popularity * 100)}%`} />
-          </div>
+          {positional ? (
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <Mini label="Suma" value={f.sum} />
+              <Mini label="Par/Impar" value={`${f.even}/${f.odd}`} />
+              <Mini label="Distintos" value={f.distinct} />
+              <Mini label="Repetidos" value={f.repeats} />
+              <Mini label="Máx" value={f.max_digit} />
+              <Mini label="Mín" value={f.min_digit} />
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <Mini label="Suma" value={combo.features.sum} />
+              <Mini label="Par/Impar" value={`${combo.features.even}/${combo.features.odd}`} />
+              <Mini label="Primos" value={combo.features.primes} />
+              <Mini label="Rango" value={combo.features.range} />
+              <Mini label="Consec." value={combo.features.consecutive} />
+              <Mini label="Popular." value={`${Math.round(combo.features.popularity * 100)}%`} />
+            </div>
+          )}
         </div>
       )}
     </GlassCard>

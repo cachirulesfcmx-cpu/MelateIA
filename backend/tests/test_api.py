@@ -173,3 +173,64 @@ def test_analytics_contextual_fields(client):
     uh = auth(client, "demo@melateai.pro", "demo1234")
     an = client.get("/api/ml/analytics?game_type=melate", headers=uh).json()
     assert "current_context" in an and "contextual" in an
+
+
+def test_chispazo_combination_game(client):
+    """Chispazo: combination game, 5 unique numbers 1..29."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+    games = {g["key"] for g in client.get("/api/draws/games").json()}
+    assert {"chispazo", "tris"} <= games
+    r = client.post("/api/predictions/generate", headers=uh, json={"game_type": "chispazo", "strategy": "hibrida", "count": 3})
+    assert r.status_code == 200, r.text
+    for c in r.json()["combos"]:
+        assert len(c["numbers"]) == 5
+        assert len(set(c["numbers"])) == 5
+        assert all(1 <= n <= 29 for n in c["numbers"])
+    # unique-number rule enforced
+    assert client.post("/api/predictions/score", headers=uh, json={"game_type": "chispazo", "numbers": [1, 1, 3, 4, 5]}).status_code == 400
+    e = client.post("/api/earnings/estimate", headers=uh, json={"game_type": "chispazo", "combinations": 5, "cost_per_combination": 15})
+    assert e.status_code == 200 and e.json()["jackpot_odds_one_in"] == 118755  # C(29,5)
+    assert client.post("/api/draws", headers=ah, json={"game_type": "chispazo", "numbers": [1, 2, 3, 4, 5], "draw_number": 95001}).status_code == 200
+
+
+def test_tris_positional_game(client):
+    """Tris: positional, 5 digits 0..9, repeats allowed, per-position matching."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+    # generate: repeats allowed, digits 0..9, length 5
+    r = client.post("/api/predictions/generate", headers=uh, json={"game_type": "tris", "strategy": "calientes", "count": 3})
+    assert r.status_code == 200, r.text
+    for c in r.json()["combos"]:
+        assert len(c["numbers"]) == 5
+        assert all(0 <= n <= 9 for n in c["numbers"])
+    # repeats are valid in Tris
+    assert client.post("/api/predictions/score", headers=uh, json={"game_type": "tris", "numbers": [5, 5, 5, 5, 5]}).status_code == 200
+    # wrong length rejected
+    assert client.post("/api/predictions/score", headers=uh, json={"game_type": "tris", "numbers": [1, 2, 3]}).status_code == 400
+    # order is preserved on save
+    sv = client.post("/api/predictions/save", headers=uh, json={"game_type": "tris", "strategy": "balanceada", "numbers": [1, 2, 3, 4, 5]})
+    assert sv.status_code == 200 and sv.json()["numbers"] == [1, 2, 3, 4, 5]
+    # per-position evaluation: [1,2,3,4,5] vs [5,4,3,2,1] -> only position 3 matches => 1 hit
+    res = client.post("/api/draws", headers=ah, json={"game_type": "tris", "numbers": [5, 4, 3, 2, 1], "draw_number": 95500})
+    assert res.status_code == 200
+    hist = client.get("/api/predictions/history?game_type=tris", headers=uh).json()
+    mine = [p for p in hist if p["numbers"] == [1, 2, 3, 4, 5]]
+    assert mine and mine[0]["results"][0]["hits"] == 1
+    # jackpot odds = 10^5 (each of 5 positions independent, 1/10)
+    e = client.post("/api/earnings/estimate", headers=uh, json={"game_type": "tris", "combinations": 5, "cost_per_combination": 6})
+    assert e.status_code == 200 and e.json()["jackpot_odds_one_in"] == 100000
+    # positional stats + probabilities shape
+    st = client.get("/api/draws/stats?game_type=tris", headers=uh).json()
+    assert st["kind"] == "positional" and len(st["positions"]) == 5
+    pr = client.get("/api/ml/probabilities?game_type=tris", headers=uh).json()
+    assert pr["kind"] == "positional" and len(pr["positions"]) == 5
+
+
+def test_existing_games_untouched(client):
+    """Guard: existing combination games still sort/dedupe and reject repeats."""
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+    r = client.post("/api/predictions/score", headers=auth(client, "demo@melateai.pro", "demo1234"),
+                    json={"game_type": "melate", "numbers": [6, 5, 4, 3, 2, 1]})
+    assert r.status_code == 200 and r.json()["numbers"] == [1, 2, 3, 4, 5, 6]  # sorted
+    assert client.post("/api/draws", headers=ah, json={"game_type": "melate", "numbers": [1, 1, 3, 4, 5, 6], "draw_number": 95900}).status_code == 400

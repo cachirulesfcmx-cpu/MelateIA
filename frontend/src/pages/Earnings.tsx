@@ -164,7 +164,7 @@ export default function Earnings() {
 
           <GlassCard className="border-amber-400/20">
             <div className="flex justify-between items-center mb-2">
-              <span className="text-sm text-white/60">Jackpot (6 aciertos)</span>
+              <span className="text-sm text-white/60">Jackpot ({est.scenarios.length ? est.scenarios[est.scenarios.length - 1].hits : 6} aciertos)</span>
               <span className="text-sm font-bold tnum text-amber-300">1 en {fmt(est.jackpot_odds_one_in)}</span>
             </div>
             <div className="flex justify-between items-center">

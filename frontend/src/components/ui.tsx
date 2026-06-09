@@ -6,6 +6,8 @@ export const GAME_THEME: Record<string, { grad: string; ring: string; emoji: str
   revancha: { grad: "from-fuchsia-500 to-purple-600", ring: "ring-fuchsia-400/40", emoji: "🟣" },
   melate_retro: { grad: "from-amber-400 to-orange-500", ring: "ring-amber-400/40", emoji: "🟠" },
   revanchita: { grad: "from-sky-400 to-blue-600", ring: "ring-sky-400/40", emoji: "🔵" },
+  chispazo: { grad: "from-rose-400 to-pink-600", ring: "ring-rose-400/40", emoji: "⚡" },
+  tris: { grad: "from-lime-400 to-emerald-600", ring: "ring-lime-400/40", emoji: "🎯" },
 };
 
 export function gameTheme(key: string) {

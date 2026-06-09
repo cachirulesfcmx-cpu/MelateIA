@@ -218,7 +218,7 @@ export default function AdminUsers() {
                 <p className="text-xs text-white/50 mb-2">🏆 Mejor combinación ({detail.best_combination.hits} aciertos)</p>
                 <div className="flex gap-1.5 flex-wrap">
                   {detail.best_combination.numbers.map((n, i) => (
-                    <NumberBall key={n} n={n} size="sm" index={i}
+                    <NumberBall key={i} n={n} size="sm" index={i}
                       variant={detail.best_combination!.matched.includes(n) ? "matched" : "default"}
                       grad={gameTheme(detail.best_combination!.game_type).grad} />
                   ))}
@@ -237,7 +237,7 @@ export default function AdminUsers() {
                       <span className="text-[11px] font-bold text-emerald-300">{p.best_hits}✓ · {p.status}</span>
                     </div>
                     <div className="flex gap-1 flex-wrap">
-                      {p.numbers.map((n) => <NumberBall key={n} n={n} size="xs" grad={gameTheme(p.game_type).grad} />)}
+                      {p.numbers.map((n, i) => <NumberBall key={i} n={n} size="xs" grad={gameTheme(p.game_type).grad} />)}
                     </div>
                   </div>
                 ))}

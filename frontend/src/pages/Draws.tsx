@@ -88,6 +88,7 @@ export default function Draws() {
   }
 
   const theme = gameTheme(game);
+  const positional = games.find((g) => g.key === game)?.kind === "positional";
   const filtered = search
     ? draws.filter((d) => d.numbers.includes(parseInt(search)) || String(d.draw_number).includes(search))
     : draws;
@@ -119,6 +120,8 @@ export default function Draws() {
         <Spinner />
       ) : (
         <div className="space-y-5 animate-fade-in">
+          {positional && <PositionalDrawsView stats={stats as unknown as PosStats} tracker={tracker as unknown as PosTracker} grad={theme.grad} />}
+          {!positional && (<>
           {/* Frequency stats */}
           <GlassCard>
             <SectionTitle title="Estadísticas" subtitle={`${stats.total_draws} sorteos analizados`} />
@@ -244,6 +247,7 @@ export default function Draws() {
               </div>
             </GlassCard>
           )}
+          </>)}
 
           {/* Draw list */}
           <div>
@@ -271,7 +275,7 @@ export default function Draws() {
                     </div>
                     <div className="flex gap-1.5 flex-wrap">
                       {d.numbers.map((n, i) => (
-                        <NumberBall key={n} n={n} size="sm" grad={theme.grad} index={i} />
+                        <NumberBall key={i} n={n} size="sm" grad={theme.grad} index={i} />
                       ))}
                       {d.additional != null && <NumberBall n={d.additional} size="sm" variant="gold" />}
                     </div>
@@ -304,6 +308,100 @@ export default function Draws() {
 
       {user?.is_admin && <FloatingActionButton onClick={() => setModal(true)} />}
       <AddDrawModal open={modal} onClose={() => setModal(false)} games={games} defaultGame={game} onSaved={load} />
+    </>
+  );
+}
+
+interface PosStats {
+  total_draws: number;
+  averages: { sum: number };
+  positions: {
+    position: number;
+    top: number;
+    most_frequent: { number: number; count: number }[];
+    least_frequent: { number: number; count: number }[];
+    prob: Record<string, number>;
+  }[];
+}
+interface PosTracker {
+  positions: {
+    position: number;
+    hot: { number: number; recent: number }[];
+    overdue: { number: number; gap: number }[];
+  }[];
+}
+
+function PositionalDrawsView({ stats, tracker, grad }: { stats: PosStats; tracker: PosTracker; grad: string }) {
+  return (
+    <>
+      <GlassCard>
+        <SectionTitle title="🎯 Estadística por posición" subtitle={`${stats.total_draws} sorteos · la posición importa en Tris`} />
+        <p className="text-[11px] text-white/50 mb-3">
+          Cada posición se analiza por separado: el dígito más frecuente en P1 no tiene por qué serlo en P3.
+        </p>
+        <div className="space-y-3">
+          {stats.positions.map((p) => {
+            const maxCount = Math.max(1, ...p.most_frequent.map((x) => x.count));
+            return (
+              <div key={p.position} className="bg-white/[0.04] rounded-2xl p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-white/70">Posición {p.position}</span>
+                  <span className="text-[10px] text-white/40">más frecuente: <b className="text-white/80">{p.top}</b></span>
+                </div>
+                <div className="flex gap-1.5 flex-wrap">
+                  {p.most_frequent.map((f, i) => (
+                    <div key={f.number} className="flex flex-col items-center">
+                      <NumberBall n={f.number} size="sm" variant={i === 0 ? "hot" : "default"} grad={i === 0 ? undefined : grad} />
+                      <span className="text-[9px] text-white/40 mt-0.5 tnum">{f.count}</span>
+                    </div>
+                  ))}
+                  <div className="w-px bg-white/10 mx-1" />
+                  {p.least_frequent.slice(0, 2).map((f) => (
+                    <div key={f.number} className="flex flex-col items-center">
+                      <NumberBall n={f.number} size="sm" variant="cold" />
+                      <span className="text-[9px] text-white/40 mt-0.5 tnum">{f.count}</span>
+                    </div>
+                  ))}
+                </div>
+                {/* mini distribution bar 0..9 */}
+                <div className="flex gap-0.5 mt-2 items-end h-8">
+                  {Object.entries(p.prob).sort((a, b) => +a[0] - +b[0]).map(([d, v]) => {
+                    const mx = Math.max(...Object.values(p.prob));
+                    return (
+                      <div key={d} className="flex-1 flex flex-col items-center justify-end">
+                        <div className={`w-full rounded-sm bg-gradient-to-t ${grad}`} style={{ height: `${(v / mx) * 100}%`, minHeight: 2 }} />
+                        <span className="text-[7px] text-white/30 tnum">{d}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </GlassCard>
+
+      {tracker?.positions && (
+        <GlassCard>
+          <SectionTitle title="⏱️ Atrasados por posición" subtitle="Dígitos que llevan más sorteos sin salir en cada posición" />
+          <div className="space-y-2">
+            {tracker.positions.map((p) => (
+              <div key={p.position} className="flex items-center gap-2 bg-white/[0.04] rounded-2xl px-3 py-2">
+                <span className="text-[11px] text-white/50 w-7">P{p.position}</span>
+                <div className="flex gap-1.5 items-center flex-1">
+                  {p.overdue.map((o) => (
+                    <div key={o.number} className="flex flex-col items-center">
+                      <NumberBall n={o.number} size="sm" />
+                      <span className="text-[9px] text-amber-300/80 mt-0.5 tnum">{o.gap}</span>
+                    </div>
+                  ))}
+                </div>
+                <span className="text-[10px] text-white/40">caliente: <b className="text-rose-300">{p.hot[0]?.number}</b></span>
+              </div>
+            ))}
+          </div>
+        </GlassCard>
+      )}
     </>
   );
 }

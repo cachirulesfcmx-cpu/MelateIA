@@ -49,6 +49,8 @@ export interface Game {
   label: string;
   max_number: number;
   pick: number;
+  min_number?: number;
+  kind?: "combination" | "positional";
 }
 
 export interface Strategy {

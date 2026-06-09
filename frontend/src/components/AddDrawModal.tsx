@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { LiquidModal } from "./LiquidModal";
 import { BallSelector } from "./BallSelector";
+import { PositionalSelector } from "./PositionalSelector";
 import { GlassButton, Capsule, gameTheme } from "./ui";
 import { NumberBall } from "./NumberBall";
 import { api } from "../api/client";
@@ -20,6 +21,7 @@ export function AddDrawModal({ open, onClose, games, defaultGame, onSaved }: Pro
   const [game, setGame] = useState(defaultGame || games[0]?.key || "melate");
   const [mode, setMode] = useState<"balls" | "text">("balls");
   const [selected, setSelected] = useState<number[]>([]);
+  const [posValue, setPosValue] = useState<(number | null)[]>([]);
   const [text, setText] = useState("");
   const [drawNumber, setDrawNumber] = useState("");
   const [date, setDate] = useState("");
@@ -27,13 +29,22 @@ export function AddDrawModal({ open, onClose, games, defaultGame, onSaved }: Pro
 
   const cfg = games.find((g) => g.key === game);
   const theme = gameTheme(game);
+  const positional = cfg?.kind === "positional";
 
   function toggle(n: number) {
     setSelected((s) => (s.includes(n) ? s.filter((x) => x !== n) : s.length < (cfg?.pick || 6) ? [...s, n] : s));
   }
 
+  function changeGame(key: string) {
+    setGame(key);
+    setSelected([]);
+    const g = games.find((x) => x.key === key);
+    setPosValue(g?.kind === "positional" ? Array(g.pick).fill(null) : []);
+  }
+
   function reset() {
     setSelected([]);
+    setPosValue(positional && cfg ? Array(cfg.pick).fill(null) : []);
     setText("");
     setDrawNumber("");
     setDate("");
@@ -56,12 +67,21 @@ export function AddDrawModal({ open, onClose, games, defaultGame, onSaved }: Pro
       };
       let res: DrawRes;
       if (mode === "balls") {
-        if (selected.length !== (cfg?.pick || 6)) {
-          notify(`Selecciona ${cfg?.pick} números`, "error");
-          setSaving(false);
-          return;
+        if (positional) {
+          if (posValue.length !== (cfg?.pick || 5) || posValue.some((v) => v === null)) {
+            notify(`Completa las ${cfg?.pick} posiciones`, "error");
+            setSaving(false);
+            return;
+          }
+          res = await api.post<DrawRes>("/draws", { ...payload, numbers: posValue });
+        } else {
+          if (selected.length !== (cfg?.pick || 6)) {
+            notify(`Selecciona ${cfg?.pick} números`, "error");
+            setSaving(false);
+            return;
+          }
+          res = await api.post<DrawRes>("/draws", { ...payload, numbers: selected });
         }
-        res = await api.post<DrawRes>("/draws", { ...payload, numbers: selected });
       } else {
         res = await api.post<DrawRes>("/draws/text", { ...payload, text });
       }
@@ -87,7 +107,7 @@ export function AddDrawModal({ open, onClose, games, defaultGame, onSaved }: Pro
       <div className="space-y-4">
         <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
           {games.map((g) => (
-            <Capsule key={g.key} active={g.key === game} onClick={() => { setGame(g.key); setSelected([]); }}>
+            <Capsule key={g.key} active={g.key === game} onClick={() => changeGame(g.key)}>
               {gameTheme(g.key).emoji} {g.label}
             </Capsule>
           ))}
@@ -109,31 +129,46 @@ export function AddDrawModal({ open, onClose, games, defaultGame, onSaved }: Pro
         </div>
 
         {mode === "balls" ? (
-          <>
-            {selected.length > 0 && (
-              <div className="flex gap-1.5 flex-wrap justify-center py-2">
-                {[...selected].sort((a, b) => a - b).map((n, i) => (
-                  <NumberBall key={n} n={n} size="sm" grad={theme.grad} index={i} onClick={() => toggle(n)} />
-                ))}
-              </div>
-            )}
-            <BallSelector
-              maxNumber={cfg?.max_number || 56}
-              pick={cfg?.pick || 6}
-              selected={selected}
-              onToggle={toggle}
+          positional ? (
+            <PositionalSelector
+              length={cfg?.pick || 5}
+              lo={cfg?.min_number ?? 0}
+              hi={cfg?.max_number ?? 9}
+              value={posValue.length ? posValue : Array(cfg?.pick || 5).fill(null)}
+              onChange={setPosValue}
               grad={theme.grad}
             />
-          </>
+          ) : (
+            <>
+              {selected.length > 0 && (
+                <div className="flex gap-1.5 flex-wrap justify-center py-2">
+                  {[...selected].sort((a, b) => a - b).map((n, i) => (
+                    <NumberBall key={n} n={n} size="sm" grad={theme.grad} index={i} onClick={() => toggle(n)} />
+                  ))}
+                </div>
+              )}
+              <BallSelector
+                maxNumber={cfg?.max_number || 56}
+                pick={cfg?.pick || 6}
+                selected={selected}
+                onToggle={toggle}
+                grad={theme.grad}
+              />
+            </>
+          )
         ) : (
           <div>
             <input
               value={text}
               onChange={(e) => setText(e.target.value)}
               className="glass-input w-full tnum text-lg tracking-wide"
-              placeholder="12 18 23 34 45 51"
+              placeholder={positional ? "5 8 0 5 2" : "12 18 23 34 45 51"}
             />
-            <p className="text-xs text-white/40 mt-2 ml-1">Separa con espacios o comas · ej: 12,18,23,34,45,51</p>
+            <p className="text-xs text-white/40 mt-2 ml-1">
+              {positional
+                ? "El orden importa · 5 dígitos 0–9, se repiten · ej: 5,8,0,5,2"
+                : "Separa con espacios o comas · ej: 12,18,23,34,45,51"}
+            </p>
           </div>
         )}
 

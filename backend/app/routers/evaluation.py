@@ -66,6 +66,11 @@ def backtesting(payload: BacktestRequest, db: Session = Depends(get_db), user: U
     rows = load_draw_rows(db, payload.game_type)
     if len(rows) < 40:
         raise HTTPException(status_code=400, detail="Historial insuficiente para backtesting (mínimo 40 sorteos)")
+    if cfg.kind == "positional":
+        from ..engine.positional import run_positional_backtest
+        return run_positional_backtest(
+            cfg, rows, payload.strategy, payload.last_n, payload.combos_per_draw, payload.cost_per_combination
+        )
     result = run_backtest(
         cfg, rows, payload.strategy, payload.last_n, payload.combos_per_draw, payload.cost_per_combination
     )

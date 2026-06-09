@@ -118,6 +118,7 @@ export default function History() {
               key={p.id}
               p={p}
               gameName={gameLabel(games, p.game_type)}
+              positional={games.find((g) => g.key === p.game_type)?.kind === "positional"}
               onReanalyze={() => reanalyze(p.id)}
               onDelete={() => remove(p.id)}
               onMarkUsed={() => markUsed(p.id)}
@@ -132,12 +133,14 @@ export default function History() {
 function PredCard({
   p,
   gameName,
+  positional,
   onReanalyze,
   onDelete,
   onMarkUsed,
 }: {
   p: Prediction;
   gameName: string;
+  positional?: boolean;
   onReanalyze: () => void;
   onDelete: () => void;
   onMarkUsed: () => void;
@@ -171,14 +174,21 @@ function PredCard({
 
       <div className="flex gap-1.5 flex-wrap justify-center">
         {p.numbers.map((n, i) => (
-          <NumberBall
-            key={n}
-            n={n}
-            size="sm"
-            index={i}
-            variant={result ? (matched.has(n) ? "matched" : "missed") : "default"}
-            grad={t.grad}
-          />
+          positional ? (
+            <div key={i} className="flex flex-col items-center">
+              <span className="text-[9px] text-white/40 mb-0.5">P{i + 1}</span>
+              <NumberBall n={n} size="sm" index={i} grad={t.grad} />
+            </div>
+          ) : (
+            <NumberBall
+              key={i}
+              n={n}
+              size="sm"
+              index={i}
+              variant={result ? (matched.has(n) ? "matched" : "missed") : "default"}
+              grad={t.grad}
+            />
+          )
         ))}
       </div>
 

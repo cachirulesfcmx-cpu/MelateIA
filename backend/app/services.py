@@ -46,11 +46,18 @@ def evaluate_prediction_against_draw(db: Session, pred: Prediction, draw: Draw) 
     if existing:
         return existing
 
-    pred_nums = set(str_to_numbers(pred.numbers))
-    draw_nums = set(str_to_numbers(draw.numbers))
-    matched = sorted(pred_nums & draw_nums)
-    missed = sorted(pred_nums - draw_nums)
-    hits = len(matched)
+    cfg = get_game(pred.game_type)
+    if cfg.kind == "positional":
+        from .engine.positional import pos_evaluate
+        hits, matched, missed = pos_evaluate(
+            str_to_numbers(pred.numbers), str_to_numbers(draw.numbers)
+        )
+    else:
+        pred_nums = set(str_to_numbers(pred.numbers))
+        draw_nums = set(str_to_numbers(draw.numbers))
+        matched = sorted(pred_nums & draw_nums)
+        missed = sorted(pred_nums - draw_nums)
+        hits = len(matched)
 
     result = PredictionResult(
         prediction_id=pred.id,
@@ -91,7 +98,11 @@ def evaluate_new_draw(db: Session, draw: Draw) -> dict:
     from .engine.game_config import get_game
     cfg = get_game(draw.game_type)
     prior = [r["numbers"] for r in load_draw_rows(db, draw.game_type) if r["draw_number"] != draw.draw_number]
-    ctx = regime(GameStats(max_number=cfg.max_number, draws=prior, pick=cfg.pick))
+    if cfg.kind == "positional":
+        from .engine.positional import PositionalStats, pos_regime
+        ctx = pos_regime(PositionalStats(cfg, prior))
+    else:
+        ctx = regime(GameStats(max_number=cfg.max_number, draws=prior, pick=cfg.pick))
 
     new_hits = []
     users_affected = set()
@@ -145,6 +156,11 @@ def retrain_system(game_type: str, db: Session) -> dict:
     from .engine.models_ml import get_model
     try:
         cfg = get_game(game_type)
+        if cfg.kind == "positional":
+            # Tris uses a per-position statistical engine, not the combination ML
+            # model; nothing to refit here (stats are recomputed on each request).
+            return {"game_type": game_type, "trained": False, "backend": "positional",
+                    "draws": len([1 for _ in load_draw_rows(db, game_type)])}
         history = [r["numbers"] for r in load_draw_rows(db, game_type)]
         model = get_model(game_type, cfg.max_number, history, force=True)
         return {"game_type": game_type, "trained": model.trained, "backend": model.backend,

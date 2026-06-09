@@ -13,6 +13,7 @@ from ..schemas import (
 )
 from ..auth import get_current_user
 from ..engine.game_config import get_game, validate_combination, GAME_KEYS
+from ..engine.positional import PositionalStats, pos_generate, pos_score, pos_features
 from ..engine.strategies import STRATEGIES, STRATEGY_KEYS, build_profile
 from ..engine.generator import generate
 from ..engine.models_ml import get_model
@@ -38,6 +39,15 @@ def generate_predictions(payload: PredictionGenerate, db: Session = Depends(get_
         raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
     if payload.strategy not in STRATEGY_KEYS:
         raise HTTPException(status_code=400, detail="Estrategia inválida")
+
+    cfg = get_game(payload.game_type)
+    if cfg.kind == "positional":
+        history = [r["numbers"] for r in load_draw_rows(db, payload.game_type)]
+        if not history:
+            raise HTTPException(status_code=400, detail="No hay sorteos cargados para este juego. Carga el CSV primero.")
+        pstats = PositionalStats(cfg, history)
+        combos = pos_generate(pstats, payload.strategy, payload.count)
+        return {"game_type": payload.game_type, "strategy": payload.strategy, "combos": combos, "routed_to": None, "context": None}
 
     stats, cfg = build_stats(db, payload.game_type)
     if not stats.draws:
@@ -104,6 +114,25 @@ def _tips(f: dict, cfg) -> list[str]:
     return tips
 
 
+def _pos_tips(numbers: list[int], stats: PositionalStats) -> list[str]:
+    tips = []
+    weak = []
+    for i, d in enumerate(numbers):
+        prob = stats.position_prob(i)
+        ranked = sorted(stats.digits, key=lambda x: prob[x], reverse=True)
+        if ranked.index(d) >= len(ranked) - 2:
+            weak.append((i + 1, d, ranked[0]))
+    for pos, d, best in weak:
+        tips.append(f"En la posición {pos}, el {d} es de los menos frecuentes; el {best} aparece más ahí.")
+    if numbers == sorted(numbers) or numbers == sorted(numbers, reverse=True):
+        tips.append("Secuencia ordenada (muy 'humana'); un orden menos obvio reduce compartir premio.")
+    if len(set(numbers)) == 1:
+        tips.append("Todos los dígitos iguales: patrón muy popular y de baja probabilidad.")
+    if not tips:
+        tips.append("Jugada posicional bien alineada con el historial ✦")
+    return tips
+
+
 @router.post("/score")
 def score_combo(payload: ScoreRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     if payload.game_type not in GAME_KEYS:
@@ -112,6 +141,30 @@ def score_combo(payload: ScoreRequest, db: Session = Depends(get_db), user: User
         numbers = validate_combination(payload.game_type, payload.numbers)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    cfg0 = get_game(payload.game_type)
+    if cfg0.kind == "positional":
+        history = [r["numbers"] for r in load_draw_rows(db, payload.game_type)]
+        if not history:
+            raise HTTPException(status_code=400, detail="Sin datos para este juego")
+        pstats = PositionalStats(cfg0, history)
+        s, comps = pos_score(numbers, pstats)
+        tips = _pos_tips(numbers, pstats)
+        number_probs = []
+        for i, d in enumerate(numbers):
+            prob = pstats.position_prob(i)
+            mx = max(prob.values()) or 1.0
+            number_probs.append({"number": d, "prob": round(prob.get(d, 0.0), 4), "rel": round(prob.get(d, 0.0) / mx, 3)})
+        return {
+            "game_type": payload.game_type,
+            "numbers": numbers,
+            "score": s,
+            "components": comps,
+            "features": pos_features(numbers),
+            "number_probs": number_probs,
+            "tips": tips,
+        }
+
     stats, cfg = build_stats(db, payload.game_type)
     if not stats.draws:
         raise HTTPException(status_code=400, detail="Sin datos para este juego")
@@ -144,11 +197,12 @@ def save_prediction(payload: PredictionSave, db: Session = Depends(get_db), user
         numbers = validate_combination(payload.game_type, payload.numbers)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    ordered = get_game(payload.game_type).kind == "positional"
     pred = Prediction(
         user_id=user.id,
         game_type=payload.game_type,
         strategy=payload.strategy,
-        numbers=numbers_to_str(numbers),
+        numbers=numbers_to_str(numbers, ordered=ordered),
         score=payload.score,
         explanation=payload.explanation,
         status="pendiente",

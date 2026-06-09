@@ -52,14 +52,18 @@ def parse_csv(content: bytes | str, game_type: str) -> list[dict]:
         key = header_map.get(name)
         return row.get(key) if key else None
 
+    positional = cfg.kind == "positional"
     rows = []
     for r in reader:
         nums = [_coerce_int(col(r, c)) for c in main_cols]
         if any(n is None for n in nums):
             continue
-        if len(set(nums)) != cfg.pick:
+        if len(nums) != cfg.pick:
             continue
-        if any(n < 1 or n > cfg.max_number for n in nums):
+        if any(n < cfg.min_number or n > cfg.max_number for n in nums):
+            continue
+        if not positional and len(set(nums)) != cfg.pick:
+            # combination games require unique numbers
             continue
         draw_number = _coerce_int(col(r, "CONCURSO"))
         date_val = col(r, "FECHA")
@@ -70,14 +74,21 @@ def parse_csv(content: bytes | str, game_type: str) -> list[dict]:
         rows.append({
             "draw_number": draw_number,
             "draw_date": draw_date,
-            "numbers": sorted(nums),
+            # positional: preserve order + repeats; combination: sort
+            "numbers": list(nums) if positional else sorted(nums),
             "additional": additional,
         })
     return rows
 
 
-def numbers_to_str(numbers: list[int]) -> str:
-    return ",".join(str(n) for n in sorted(numbers))
+def numbers_to_str(numbers: list[int], ordered: bool = False) -> str:
+    """Serialize numbers for storage.
+
+    Combination games sort (order-independent). Positional games pass
+    ``ordered=True`` to preserve the exact sequence (Tris position matters).
+    """
+    seq = list(numbers) if ordered else sorted(numbers)
+    return ",".join(str(n) for n in seq)
 
 
 def str_to_numbers(s: str) -> list[int]:

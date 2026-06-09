@@ -19,6 +19,9 @@ router = APIRouter(prefix="/api/ml", tags=["ml"])
 
 def _train(db: Session, game_type: str, force: bool):
     cfg = get_game(game_type)
+    if cfg.kind == "positional":
+        return {"game_type": game_type, "trained": False, "backend": "positional",
+                "reason": "Tris usa un motor posicional estadístico (sin modelo de combinación)."}
     history = [r["numbers"] for r in load_draw_rows(db, game_type)]
     if len(history) < 60:
         return {"game_type": game_type, "trained": False, "reason": "Historial insuficiente (mínimo 60 sorteos)"}
@@ -81,6 +84,11 @@ def probabilities(game_type: str, db: Session = Depends(get_db), user: User = De
     history = [r["numbers"] for r in load_draw_rows(db, game_type)]
     if len(history) < 30:
         raise HTTPException(status_code=400, detail="Historial insuficiente")
+    if cfg.kind == "positional":
+        from ..engine.positional import PositionalStats, pos_probabilities
+        out = pos_probabilities(PositionalStats(cfg, history))
+        out.update({"game_type": game_type, "kind": "positional", "backend": "positional", "trained": True})
+        return out
     model = get_model(game_type, cfg.max_number, history)
     probs = model.probabilities(history)
     mx = max(probs.values()) or 1.0
@@ -190,7 +198,11 @@ def analytics(game_type: str | None = None, db: Session = Depends(get_db), user:
         cfg = get_game(game_type)
         seqs = [r["numbers"] for r in load_draw_rows(db, game_type)]
         if seqs:
-            current_context = regime(GameStats(max_number=cfg.max_number, draws=seqs, pick=cfg.pick))
+            if cfg.kind == "positional":
+                from ..engine.positional import PositionalStats, pos_regime
+                current_context = pos_regime(PositionalStats(cfg, seqs))
+            else:
+                current_context = regime(GameStats(max_number=cfg.max_number, draws=seqs, pick=cfg.pick))
         crows = db.query(StrategyContextPerf).filter(StrategyContextPerf.game_type == game_type).all()
         by_ctx: dict[str, list] = {}
         for r in crows:

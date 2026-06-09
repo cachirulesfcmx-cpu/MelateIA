@@ -6,6 +6,7 @@ import { PageHeader, Disclaimer } from "../components/AppLayout";
 import { GlassCard, GlassButton, Spinner, SectionTitle, gameTheme } from "../components/ui";
 import { GameSelector } from "../components/GameSelector";
 import { BallSelector } from "../components/BallSelector";
+import { PositionalSelector } from "../components/PositionalSelector";
 import { NumberBall } from "../components/NumberBall";
 import { HeatLegend } from "../components/NumberHeatmap";
 import { useToast } from "../context/ToastContext";
@@ -32,16 +33,31 @@ export default function Builder() {
   const cfg = games.find((g) => g.key === game);
   const theme = gameTheme(game);
   const pick = cfg?.pick || 6;
+  const positional = cfg?.kind === "positional";
+  const [posValue, setPosValue] = useState<(number | null)[]>([]);
 
   useEffect(() => {
     setSelected([]);
+    setPosValue(cfg?.kind === "positional" ? Array(cfg.pick).fill(null) : []);
     setRes(null);
+    if (cfg?.kind === "positional") { setIntensity({}); return; }
     api.get<{ numbers: { number: number; rel: number }[] }>(`/ml/probabilities?game_type=${game}`)
       .then((p) => setIntensity(Object.fromEntries(p.numbers.map((n) => [n.number, n.rel]))))
       .catch(() => setIntensity({}));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game]);
 
   useEffect(() => {
+    if (positional) {
+      if (posValue.length !== pick || posValue.some((v) => v === null)) { setRes(null); return; }
+      let cancel = false;
+      setScoring(true);
+      api.post<ScoreRes>("/predictions/score", { game_type: game, numbers: posValue })
+        .then((r) => { if (!cancel) setRes(r); })
+        .catch((e) => notify((e as Error).message, "error"))
+        .finally(() => { if (!cancel) setScoring(false); });
+      return () => { cancel = true; };
+    }
     if (selected.length !== pick) { setRes(null); return; }
     let cancel = false;
     setScoring(true);
@@ -51,15 +67,18 @@ export default function Builder() {
       .finally(() => { if (!cancel) setScoring(false); });
     return () => { cancel = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, game]);
+  }, [selected, posValue, game]);
 
   function toggle(n: number) {
     setSelected((s) => (s.includes(n) ? s.filter((x) => x !== n) : s.length < pick ? [...s, n] : s));
   }
 
+  const complete = positional ? posValue.length === pick && posValue.every((v) => v !== null) : selected.length === pick;
+  const playNumbers = positional ? (posValue as number[]) : selected;
+
   async function save() {
     try {
-      await api.post("/predictions/save", { game_type: game, strategy: "balanceada", numbers: selected, score: res?.score || 0, explanation: "Construida manualmente" });
+      await api.post("/predictions/save", { game_type: game, strategy: "balanceada", numbers: playNumbers, score: res?.score || 0, explanation: "Construida manualmente" });
       notify("Jugada guardada ✦", "success");
     } catch (e) { notify((e as Error).message, "error"); }
   }
@@ -72,19 +91,32 @@ export default function Builder() {
       <div className="mb-4"><GameSelector games={games} value={game} onChange={setGame} /></div>
 
       <GlassCard className="mb-4">
-        <SectionTitle title="Elige tus números" subtitle="Color = probabilidad del modelo IA" />
-        {selected.length > 0 && (
-          <div className="flex gap-1.5 flex-wrap justify-center mb-3">
-            {[...selected].sort((a, b) => a - b).map((n, i) => (
-              <NumberBall key={n} n={n} size="sm" grad={theme.grad} index={i} onClick={() => toggle(n)} />
-            ))}
-          </div>
+        <SectionTitle title="Elige tus números" subtitle={positional ? "La posición importa · dígitos 0–9 (se repiten)" : "Color = probabilidad del modelo IA"} />
+        {positional ? (
+          <PositionalSelector
+            length={pick}
+            lo={cfg?.min_number ?? 0}
+            hi={cfg?.max_number ?? 9}
+            value={posValue.length ? posValue : Array(pick).fill(null)}
+            onChange={setPosValue}
+            grad={theme.grad}
+          />
+        ) : (
+          <>
+            {selected.length > 0 && (
+              <div className="flex gap-1.5 flex-wrap justify-center mb-3">
+                {[...selected].sort((a, b) => a - b).map((n, i) => (
+                  <NumberBall key={n} n={n} size="sm" grad={theme.grad} index={i} onClick={() => toggle(n)} />
+                ))}
+              </div>
+            )}
+            <BallSelector maxNumber={cfg?.max_number || 56} pick={pick} selected={selected} onToggle={toggle} grad={theme.grad} intensity={intensity} />
+            <HeatLegend />
+          </>
         )}
-        <BallSelector maxNumber={cfg?.max_number || 56} pick={pick} selected={selected} onToggle={toggle} grad={theme.grad} intensity={intensity} />
-        <HeatLegend />
       </GlassCard>
 
-      {selected.length === pick && (
+      {complete && (
         <GlassCard glow className="mb-4 animate-slide-up">
           {scoring && !res ? <Spinner /> : res && (
             <>
@@ -99,12 +131,25 @@ export default function Builder() {
                 <div className="h-full bg-gradient-to-r from-violet-500 to-cyan-400" style={{ width: `${pct}%` }} />
               </div>
               <div className="grid grid-cols-3 gap-2 mb-4 text-center">
-                <Mini label="Suma" value={res.features.sum} />
-                <Mini label="Par/Impar" value={`${res.features.even}/${res.features.odd}`} />
-                <Mini label="Primos" value={res.features.primes} />
-                <Mini label="Rango" value={res.features.range} />
-                <Mini label="Consec." value={res.features.consecutive} />
-                <Mini label="Popular." value={`${Math.round(res.features.popularity * 100)}%`} />
+                {positional ? (
+                  <>
+                    <Mini label="Suma" value={res.features.sum} />
+                    <Mini label="Par/Impar" value={`${res.features.even}/${res.features.odd}`} />
+                    <Mini label="Distintos" value={res.features.distinct} />
+                    <Mini label="Repetidos" value={res.features.repeats} />
+                    <Mini label="Máx" value={res.features.max_digit} />
+                    <Mini label="Mín" value={res.features.min_digit} />
+                  </>
+                ) : (
+                  <>
+                    <Mini label="Suma" value={res.features.sum} />
+                    <Mini label="Par/Impar" value={`${res.features.even}/${res.features.odd}`} />
+                    <Mini label="Primos" value={res.features.primes} />
+                    <Mini label="Rango" value={res.features.range} />
+                    <Mini label="Consec." value={res.features.consecutive} />
+                    <Mini label="Popular." value={`${Math.round(res.features.popularity * 100)}%`} />
+                  </>
+                )}
               </div>
               <p className="text-xs text-white/50 mb-2">💡 Sugerencias</p>
               <ul className="space-y-1.5 mb-4">
@@ -114,7 +159,7 @@ export default function Builder() {
               </ul>
               <div className="flex gap-2">
                 <GlassButton full onClick={save}>Guardar jugada</GlassButton>
-                <GlassButton variant="ghost" onClick={() => sharePrediction({ numbers: selected, gameType: game, score: res.score })}>↗</GlassButton>
+                <GlassButton variant="ghost" onClick={() => sharePrediction({ numbers: playNumbers, gameType: game, score: res.score })}>↗</GlassButton>
               </div>
             </>
           )}

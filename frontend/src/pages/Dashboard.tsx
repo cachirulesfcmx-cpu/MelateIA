@@ -70,7 +70,7 @@ export default function Dashboard() {
               <div className="flex gap-2 flex-wrap">
                 {data.best_combination.numbers.map((n: number, i: number) => (
                   <NumberBall
-                    key={n}
+                    key={i}
                     n={n}
                     index={i}
                     variant={data.best_combination.matched.includes(n) ? "matched" : "default"}
@@ -101,7 +101,7 @@ export default function Dashboard() {
                     </div>
                     <div className="flex gap-1.5 flex-wrap">
                       {d.numbers.map((n: number, i: number) => (
-                        <NumberBall key={n} n={n} size="sm" grad={t.grad} index={i} />
+                        <NumberBall key={i} n={n} size="sm" grad={t.grad} index={i} />
                       ))}
                       {d.additional != null && (
                         <div className="flex items-center gap-1 ml-1">
@@ -134,8 +134,8 @@ export default function Dashboard() {
                       </div>
                     </div>
                     <div className="flex gap-1">
-                      {h.matched.map((n: number) => (
-                        <NumberBall key={n} n={n} size="xs" variant="matched" />
+                      {h.matched.map((n: number, i: number) => (
+                        <NumberBall key={i} n={n} size="xs" variant="matched" />
                       ))}
                     </div>
                   </GlassCard>

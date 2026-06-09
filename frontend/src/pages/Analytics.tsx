@@ -14,8 +14,10 @@ import { getDefaultGame } from "../settings";
 interface Probs {
   backend: string;
   trained: boolean;
+  kind?: string;
   numbers: { number: number; prob: number; rel: number }[];
   top: { number: number; prob: number; rel: number }[];
+  positions?: { position: number; top: number; digits: { digit: number; prob: number; rel: number }[] }[];
 }
 
 interface Strat {
@@ -139,6 +141,31 @@ export default function Analytics() {
               <Spinner label="Calculando con el modelo…" />
             ) : !probs ? (
               <p className="text-center text-xs text-white/30 py-4">Sin datos suficientes.</p>
+            ) : probs.kind === "positional" && probs.positions ? (
+              <div className="space-y-3">
+                <p className="text-[11px] text-white/55">Dígito más probable por posición (la posición importa en Tris):</p>
+                {probs.positions.map((p) => {
+                  const mx = Math.max(...p.digits.map((d) => d.prob));
+                  return (
+                    <div key={p.position} className="bg-white/[0.04] rounded-2xl p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-semibold text-white/70">Posición {p.position}</span>
+                        <span className="text-[10px] text-white/40">top: <b className="text-white/80">{p.top}</b></span>
+                      </div>
+                      <div className="flex gap-0.5 items-end h-12">
+                        {p.digits.sort((a, b) => a.digit - b.digit).map((d) => (
+                          <div key={d.digit} className="flex-1 flex flex-col items-center justify-end">
+                            <span className="text-[8px] text-white/40 tnum mb-0.5">{(d.prob * 100).toFixed(0)}</span>
+                            <div className="w-full rounded-sm bg-gradient-to-t from-lime-400 to-emerald-500" style={{ height: `${(d.prob / mx) * 100}%`, minHeight: 2 }} />
+                            <span className="text-[8px] text-white/40 tnum mt-0.5">{d.digit}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+                <p className="text-[10px] text-white/35 text-center">El modelo estima probabilidades por posición; Tris sigue siendo azar.</p>
+              </div>
             ) : (
               <>
                 <p className="text-[11px] text-white/55 mb-2">Top {probs.top.length} números más probables (modelo):</p>

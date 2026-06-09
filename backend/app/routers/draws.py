@@ -33,7 +33,8 @@ def _draw_out(d: Draw) -> dict:
 @router.get("/games")
 def list_games():
     return [
-        {"key": k, "label": g.label, "max_number": g.max_number, "pick": g.pick}
+        {"key": k, "label": g.label, "max_number": g.max_number, "pick": g.pick,
+         "min_number": g.min_number, "kind": g.kind}
         for k, g in GAMES.items()
     ]
 
@@ -88,11 +89,12 @@ def _create_draw(db, user, game_type, numbers, draw_number, draw_date, additiona
     )
     if exists:
         raise HTTPException(status_code=400, detail=f"El concurso {draw_number} ya existe para {game_type}")
+    ordered = get_game(game_type).kind == "positional"
     draw = Draw(
         game_type=game_type,
         draw_number=draw_number,
         draw_date=draw_date,
-        numbers=numbers_to_str(numbers),
+        numbers=numbers_to_str(numbers, ordered=ordered),
         additional=additional,
         source=source,
         created_by=user.id,
@@ -172,6 +174,7 @@ async def upload_csv(
     existing_numbers = {
         d.draw_number for d in db.query(Draw.draw_number).filter(Draw.game_type == game_type).all()
     }
+    ordered = get_game(game_type).kind == "positional"
     imported = 0
     for r in rows:
         if r["draw_number"] in existing_numbers:
@@ -180,7 +183,7 @@ async def upload_csv(
             game_type=game_type,
             draw_number=r["draw_number"],
             draw_date=r["draw_date"],
-            numbers=numbers_to_str(r["numbers"]),
+            numbers=numbers_to_str(r["numbers"], ordered=ordered),
             additional=r["additional"],
             source="csv",
             created_by=user.id,
@@ -200,6 +203,8 @@ def draw_stats(game_type: str, window: int = 50, db: Session = Depends(get_db)):
     rows = load_draw_rows(db, game_type)
     if not rows:
         return {"game_type": game_type, "total_draws": 0, "message": "Sin datos cargados"}
+    if cfg.kind == "positional":
+        return _positional_stats(cfg, rows, window)
     sequences = [r["numbers"] for r in rows]
     stats = GameStats(max_number=cfg.max_number, draws=sequences, pick=cfg.pick)
 
@@ -246,6 +251,84 @@ def draw_stats(game_type: str, window: int = 50, db: Session = Depends(get_db)):
     }
 
 
+def _positional_stats(cfg, rows, window: int) -> dict:
+    """Per-position digit statistics for Tris."""
+    from ..engine.positional import PositionalStats
+    sequences = [r["numbers"] for r in rows]
+    ps = PositionalStats(cfg, sequences)
+    positions = []
+    for i in range(ps.length):
+        prob = ps.position_prob(i)
+        ranked = sorted(ps.digits, key=lambda d: ps.pos_freq[i].get(d, 0), reverse=True)
+        positions.append({
+            "position": i + 1,
+            "frequency": {str(d): ps.pos_freq[i].get(d, 0) for d in ps.digits},
+            "most_frequent": [{"number": d, "count": ps.pos_freq[i].get(d, 0)} for d in ranked[:3]],
+            "least_frequent": [{"number": d, "count": ps.pos_freq[i].get(d, 0)} for d in ranked[-3:]],
+            "top": ranked[0],
+            "prob": {str(d): round(prob[d], 4) for d in ps.digits},
+        })
+    sums = [sum(s) for s in sequences]
+
+    def avg(x):
+        return round(sum(x) / len(x), 2) if x else 0
+
+    return {
+        "game_type": cfg.key,
+        "label": cfg.label,
+        "kind": "positional",
+        "max_number": cfg.max_number,
+        "min_number": cfg.min_number,
+        "pick": cfg.pick,
+        "total_draws": len(sequences),
+        "positions": positions,
+        "averages": {"sum": avg(sums)},
+        "sum_min": min(sums) if sums else 0,
+        "sum_max": max(sums) if sums else 0,
+    }
+
+
+def _positional_tracker(cfg, rows, window: int) -> dict:
+    """Per-position hot/overdue digits for Tris."""
+    from ..engine.positional import PositionalStats
+    sequences = [r["numbers"] for r in rows]
+    if not sequences:
+        return {"game_type": cfg.key, "total_draws": 0, "kind": "positional", "positions": [], "numbers": []}
+    ps = PositionalStats(cfg, sequences)
+    positions = []
+    for i in range(ps.length):
+        recent = ps.pos_recent[i]
+        gaps = ps.pos_gaps[i]
+        freq = ps.pos_freq[i]
+        digits = [{
+            "number": d,
+            "frequency": freq.get(d, 0),
+            "recent": recent.get(d, 0),
+            "gap": gaps.get(d, ps.total),
+            "heat": round(recent.get(d, 0) / max(1, min(window, ps.total)), 3),
+        } for d in ps.digits]
+        hot = sorted(digits, key=lambda x: (x["recent"], x["frequency"]), reverse=True)[:3]
+        overdue = sorted(digits, key=lambda x: x["gap"], reverse=True)[:3]
+        positions.append({"position": i + 1, "digits": digits, "hot": hot, "overdue": overdue})
+    # aggregate digit-level view (ignoring position) for generic consumers
+    agg = []
+    for d in ps.digits:
+        gap = min(ps.pos_gaps[i].get(d, ps.total) for i in range(ps.length))
+        agg.append({"number": d, "frequency": ps.digit_freq.get(d, 0), "gap": gap})
+    return {
+        "game_type": cfg.key,
+        "label": cfg.label,
+        "kind": "positional",
+        "max_number": cfg.max_number,
+        "min_number": cfg.min_number,
+        "total_draws": ps.total,
+        "window": window,
+        "positions": positions,
+        "numbers": agg,
+        "overdue": sorted(agg, key=lambda x: x["gap"], reverse=True)[:10],
+    }
+
+
 def _parse_date(s):
     if not s:
         return None
@@ -263,6 +346,8 @@ def hot_pairs(game_type: str, limit: int = 12, db: Session = Depends(get_db), us
     if game_type not in GAME_KEYS:
         raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
     cfg = get_game(game_type)
+    if cfg.kind == "positional":
+        return {"game_type": game_type, "pairs": []}  # pairs are meaningless for positional games
     rows = load_draw_rows(db, game_type)
     if not rows:
         return {"game_type": game_type, "pairs": []}
@@ -282,6 +367,8 @@ def number_tracker(game_type: str, window: int = 50, db: Session = Depends(get_d
     if game_type not in GAME_KEYS:
         raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
     cfg = get_game(game_type)
+    if cfg.kind == "positional":
+        return _positional_tracker(cfg, load_draw_rows(db, game_type), window)
     rows = load_draw_rows(db, game_type)  # oldest -> newest
     if not rows:
         return {"game_type": game_type, "total_draws": 0, "numbers": []}
