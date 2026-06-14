@@ -57,6 +57,19 @@ def generate_predictions(payload: PredictionGenerate, db: Session = Depends(get_
     model = get_model(payload.game_type, cfg.max_number, history)
     scorer = model.make_scorer(history)
 
+    # "Evolutiva" = score candidates with the fused evolutionary ensemble
+    # (base models blended with the ML model), not the raw ML model alone.
+    ensemble_info = None
+    if payload.strategy == "evolutiva":
+        from ..engine import ensemble
+        ensemble_info = ensemble.compute_weights(history, cfg)
+        fused = ensemble.fused_probabilities(history, cfg, weights=ensemble_info["weights"], ml_probs=model.probabilities(history))
+        ranked = sorted(fused.values(), reverse=True)
+        top = sum(ranked[: cfg.max_number // 4]) or 1.0
+
+        def scorer(combo: list[int]) -> float:  # noqa: F811
+            return min(1.0, sum(fused.get(n, 0.0) for n in combo) / (top * 0.6 + 1e-6))
+
     # "Adaptativa" = contextual bandit: route to the best strategy learned for
     # the CURRENT regime, falling back to the global best, then the hybrid engine.
     effective = payload.strategy
@@ -78,6 +91,12 @@ def generate_predictions(payload: PredictionGenerate, db: Session = Depends(get_
         for c in combos:
             c["strategy"] = "adaptativa"
             c["explanation"] = f"Adaptativa (IA · régimen {ctx}) → estrategia mejor evaluada: {STRATEGIES[effective]['label']}. " + c["explanation"]
+    if payload.strategy == "evolutiva" and ensemble_info:
+        from ..engine.ensemble import MODEL_LABELS
+        lead = max(ensemble_info["weights"], key=ensemble_info["weights"].get)
+        lead_pct = round(ensemble_info["weights"][lead] * 100)
+        for c in combos:
+            c["explanation"] = f"Evolutiva (ensemble · modelo líder: {MODEL_LABELS.get(lead, lead)} {lead_pct}%). " + c["explanation"]
     return {"game_type": payload.game_type, "strategy": payload.strategy, "combos": combos, "routed_to": routed, "context": ctx}
 
 

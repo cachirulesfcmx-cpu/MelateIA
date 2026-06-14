@@ -137,6 +137,23 @@ class PushSubscription(Base):
     created_at = Column(DateTime, default=utcnow)
 
 
+class EnsembleWeight(Base):
+    """Persisted evolved weights of the statistical ensemble, per game.
+
+    Recomputed after each official draw (walk-forward), so the mix of base
+    models keeps adapting as the history grows. Stored as JSON strings to stay
+    backend-agnostic (SQLite/Postgres).
+    """
+    __tablename__ = "ensemble_weight"
+
+    id = Column(Integer, primary_key=True, index=True)
+    game_type = Column(String, unique=True, index=True, nullable=False)
+    weights = Column(Text, default="{}")       # {model: weight}
+    performance = Column(Text, default="{}")    # {model: walk-forward hit-rate}
+    n_draws = Column(Integer, default=0)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class StrategyContextPerf(Base):
     """Per-context (regime) reinforcement weights for the contextual bandit."""
     __tablename__ = "strategy_context_perf"

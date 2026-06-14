@@ -18,6 +18,7 @@ interface Probs {
   numbers: { number: number; prob: number; rel: number }[];
   top: { number: number; prob: number; rel: number }[];
   positions?: { position: number; top: number; digits: { digit: number; prob: number; rel: number }[] }[];
+  ensemble_weights?: { model: string; label: string; weight: number; score: number }[];
 }
 
 interface Strat {
@@ -31,12 +32,14 @@ interface Strat {
 }
 interface EvoPoint { i: number; cum_avg_hits: number; weight: number; strategy: string; hits: number; }
 interface CtxBlock { context: string; strategies: { strategy: string; weight: number; normalized: number; evaluations: number; average_hits: number }[]; }
+interface EnsembleBlock { models: { model: string; label: string; weight: number; score: number }[]; n_draws: number; leader: string | null; }
 interface Analytics {
   strategies: Strat[];
   evolution: EvoPoint[];
   learning_events: number;
   current_context: string | null;
   contextual: CtxBlock[];
+  ensemble: EnsembleBlock | null;
   user: {
     hits_distribution: Record<string, number>;
     timeline: { date: string; avg_hits: number; count: number }[];
@@ -59,6 +62,7 @@ export default function Analytics() {
 
   const [probs, setProbs] = useState<Probs | null>(null);
   const [probsLoading, setProbsLoading] = useState(false);
+  const [probsSource, setProbsSource] = useState<"ml" | "ensemble">("ml");
   const [bt, setBt] = useState<{ strategy: string; avg: number; random: number; edge: number; best: number }[]>([]);
   const [btRunning, setBtRunning] = useState(false);
   const [btProgress, setBtProgress] = useState(0);
@@ -71,11 +75,11 @@ export default function Analytics() {
       setLoading(false);
     }
   }
-  async function loadProbs() {
+  async function loadProbs(source = probsSource) {
     setProbsLoading(true);
     setProbs(null);
     try {
-      setProbs(await api.get<Probs>(`/ml/probabilities?game_type=${game}`));
+      setProbs(await api.get<Probs>(`/ml/probabilities?game_type=${game}&source=${source}`));
     } catch {
       /* insufficient history etc. */
     } finally {
@@ -85,7 +89,7 @@ export default function Analytics() {
   useEffect(() => {
     loadProbs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game]);
+  }, [game, probsSource]);
   useEffect(() => {
     load();
     setBt([]);
@@ -137,6 +141,19 @@ export default function Analytics() {
               title="🔮 Probabilidades del modelo IA"
               subtitle={probs ? `Motor: ${probs.backend}${probs.trained ? "" : " (heurístico)"}` : "Probabilidad de aparición por número"}
             />
+            {probs?.kind !== "positional" && (
+              <div className="flex gap-1 mb-3 p-1 rounded-xl bg-white/[0.04] w-fit">
+                {(["ml", "ensemble"] as const).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setProbsSource(s)}
+                    className={`text-[11px] px-3 py-1 rounded-lg transition ${probsSource === s ? "bg-gradient-to-r from-violet-500 to-cyan-400 text-white font-semibold" : "text-white/50 hover:text-white/80"}`}
+                  >
+                    {s === "ml" ? "Modelo ML" : "🧬 Ensemble"}
+                  </button>
+                ))}
+              </div>
+            )}
             {probsLoading ? (
               <Spinner label="Calculando con el modelo…" />
             ) : !probs ? (
@@ -180,6 +197,16 @@ export default function Analytics() {
                 <p className="text-[11px] text-white/55 mb-2">Mapa de calor (todos los números):</p>
                 <NumberHeatmap items={probs.numbers} highlight={probs.top.map((t) => t.number)} />
                 <HeatLegend />
+                {probs.ensemble_weights && probs.ensemble_weights.length > 0 && (
+                  <div className="mt-4">
+                    <p className="text-[11px] text-white/55 mb-2">Pesos evolucionados de los modelos del ensemble:</p>
+                    <BarList
+                      items={probs.ensemble_weights.map((w) => ({ label: w.label, value: w.weight * 100, sub: `acierto ${(w.score * 100).toFixed(1)}%` }))}
+                      format={(v) => `${v.toFixed(1)}%`}
+                      accent="from-emerald-400 via-cyan-400 to-violet-500"
+                    />
+                  </div>
+                )}
                 <p className="text-[10px] text-white/35 mt-3 text-center">El modelo estima probabilidades relativas; la lotería sigue siendo azar.</p>
               </>
             )}
@@ -200,6 +227,21 @@ export default function Analytics() {
                   </div>
                 ))}
               </div>
+            </GlassCard>
+          )}
+
+          {/* Evolutionary ensemble weights */}
+          {data.ensemble && data.ensemble.models.length > 0 && (
+            <GlassCard glow>
+              <SectionTitle title="🧬 Ensemble evolutivo" subtitle={`${data.ensemble.models.length} modelos · pesos evolucionados sobre ${data.ensemble.n_draws} sorteos`} />
+              <p className="text-[11px] text-white/45 mb-3">
+                Cada modelo (Bayes, Markov, atraso, co-ocurrencia, momentum…) recibe un peso según su acierto histórico (validación walk-forward). El líder actual es <span className="text-cyan-200 font-semibold">{data.ensemble.models[0].label}</span>.
+              </p>
+              <BarList
+                items={data.ensemble.models.map((m) => ({ label: m.label, value: m.weight * 100, sub: `acierto ${(m.score * 100).toFixed(1)}%` }))}
+                format={(v) => `${v.toFixed(1)}%`}
+                accent="from-emerald-400 via-cyan-400 to-violet-500"
+              />
             </GlassCard>
           )}
 

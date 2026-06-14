@@ -107,6 +107,18 @@ STRATEGIES = {
         "use_ml": True,
         "adaptive": True,
     },
+    "evolutiva": {
+        "label": "Evolutiva (ensemble)",
+        "desc": "Fusiona varios modelos estadísticos (Bayes, Markov, atraso, co-ocurrencia, momentum…) con pesos que evolucionan según su acierto histórico, mezclados con el modelo ML.",
+        "prefer": "balanced",
+        "recency_bias": 0.5,
+        "anti_popular": True,
+        "ideal_odd": 3, "ideal_primes": 2,
+        "component_weights": {"signal": 1.6, "spread": 1.4, "synergy": 1.2, "contrarian": 1.0},
+        "temperature": 1.0,
+        "genetic": True,
+        "use_ml": True,
+    },
 }
 
 STRATEGY_KEYS = list(STRATEGIES.keys())

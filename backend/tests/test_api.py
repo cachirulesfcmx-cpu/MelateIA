@@ -63,7 +63,7 @@ def test_validation_returns_400(client):
     assert client.post("/api/draws", headers=ah, json={"game_type": "melate_retro", "numbers": [1, 2, 3, 40, 41, 42], "draw_number": 90002}).status_code == 400
 
 
-@pytest.mark.parametrize("strategy", ["conservadora", "balanceada", "agresiva", "genetica", "anti_popular", "calientes", "frios", "hibrida", "adaptativa"])
+@pytest.mark.parametrize("strategy", ["conservadora", "balanceada", "agresiva", "genetica", "anti_popular", "calientes", "frios", "hibrida", "adaptativa", "evolutiva"])
 def test_generate_all_strategies(client, strategy):
     uh = auth(client, "demo@melateai.pro", "demo1234")
     r = client.post("/api/predictions/generate", headers=uh, json={"game_type": "melate", "strategy": strategy, "count": 2})
@@ -105,7 +105,7 @@ def test_official_draw_evaluates_all_and_analytics(client):
     assert body["evaluated_predictions"] >= 1
     assert body["retrained"] is not None
     an = client.get("/api/ml/analytics?game_type=revancha", headers=uh).json()
-    assert len(an["strategies"]) == 9
+    assert len(an["strategies"]) == 10
     assert an["learning_events"] >= 1
 
 
@@ -225,6 +225,27 @@ def test_tris_positional_game(client):
     assert st["kind"] == "positional" and len(st["positions"]) == 5
     pr = client.get("/api/ml/probabilities?game_type=tris", headers=uh).json()
     assert pr["kind"] == "positional" and len(pr["positions"]) == 5
+
+
+def test_ensemble_probabilities_and_weights(client):
+    """Evolutionary ensemble: fused per-number probs + evolved model weights."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    p = client.get("/api/ml/probabilities?game_type=melate&source=ensemble", headers=uh)
+    assert p.status_code == 200, p.text
+    j = p.json()
+    assert j["backend"] == "ensemble"
+    assert len(j["numbers"]) == 56
+    # normalized distribution (tolerance covers 4-decimal rounding in the response)
+    assert abs(sum(n["prob"] for n in j["numbers"]) - 1.0) < 0.01
+    w = j["ensemble_weights"]
+    assert len(w) == 7
+    assert abs(sum(m["weight"] for m in w) - 1.0) < 0.01  # weights form a distribution
+    # analytics surfaces the persisted/lazy ensemble block
+    an = client.get("/api/ml/analytics?game_type=melate", headers=uh).json()
+    assert an["ensemble"] is not None and len(an["ensemble"]["models"]) == 7
+    # positional games have no ensemble
+    an_t = client.get("/api/ml/analytics?game_type=tris", headers=uh).json()
+    assert an_t["ensemble"] is None
 
 
 def test_existing_games_untouched(client):

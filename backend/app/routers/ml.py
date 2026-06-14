@@ -75,9 +75,13 @@ def performance(game_type: str | None = None, db: Session = Depends(get_db), use
 
 
 @router.get("/probabilities")
-def probabilities(game_type: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Per-number probability of appearing in the next draw, from the trained
-    ML model (XGBoost/GradientBoosting where available, heuristic otherwise)."""
+def probabilities(game_type: str, source: str = "ml", db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Per-number probability of appearing in the next draw.
+
+    source="ml" (default): the trained per-number model (XGBoost/GradientBoosting).
+    source="ensemble": the evolutionary ensemble (base models fused by evolved
+    weights, blended 50/50 with the ML model). Combination games only.
+    """
     if game_type not in GAME_KEYS:
         raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
     cfg = get_game(game_type)
@@ -89,6 +93,26 @@ def probabilities(game_type: str, db: Session = Depends(get_db), user: User = De
         out = pos_probabilities(PositionalStats(cfg, history))
         out.update({"game_type": game_type, "kind": "positional", "backend": "positional", "trained": True})
         return out
+    if source == "ensemble":
+        from ..engine import ensemble
+        model = get_model(game_type, cfg.max_number, history)
+        info = ensemble.compute_weights(history, cfg)
+        probs = ensemble.fused_probabilities(history, cfg, weights=info["weights"], ml_probs=model.probabilities(history))
+        mx = max(probs.values()) or 1.0
+        ranked = sorted(probs.items(), key=lambda kv: kv[1], reverse=True)
+        weights_out = [
+            {"model": k, "label": ensemble.MODEL_LABELS.get(k, k),
+             "weight": round(info["weights"].get(k, 0.0), 4), "score": round(info["scores"].get(k, 0.0), 4)}
+            for k in ensemble.MODEL_KEYS
+        ]
+        weights_out.sort(key=lambda w: w["weight"], reverse=True)
+        return {
+            "game_type": game_type, "max_number": cfg.max_number, "pick": cfg.pick,
+            "backend": "ensemble", "source": "ensemble", "trained": True,
+            "ensemble_weights": weights_out,
+            "numbers": [{"number": n, "prob": round(probs[n], 4), "rel": round(probs[n] / mx, 3)} for n in range(1, cfg.max_number + 1)],
+            "top": [{"number": n, "prob": round(p, 4), "rel": round(p / mx, 3)} for n, p in ranked[: cfg.pick * 2]],
+        }
     model = get_model(game_type, cfg.max_number, history)
     probs = model.probabilities(history)
     mx = max(probs.values()) or 1.0
@@ -219,6 +243,41 @@ def analytics(game_type: str | None = None, db: Session = Depends(get_db), user:
                 ),
             })
 
+    # ---- evolutionary ensemble weights (combination games) ----
+    ensemble_block = None
+    if game_type:
+        cfg = get_game(game_type)
+        if cfg.kind != "positional":
+            import json
+            from ..models import EnsembleWeight
+            from ..engine import ensemble as _ens
+            row = db.query(EnsembleWeight).filter(EnsembleWeight.game_type == game_type).first()
+            weights, perf, n_draws = {}, {}, 0
+            # lazy init: compute & persist the first time the page is opened
+            if not row:
+                hist = [r["numbers"] for r in load_draw_rows(db, game_type)]
+                try:
+                    from ..services import update_ensemble_weights
+                    update_ensemble_weights(db, cfg, hist)
+                    row = db.query(EnsembleWeight).filter(EnsembleWeight.game_type == game_type).first()
+                except Exception:
+                    row = None
+            if row:
+                try:
+                    weights = json.loads(row.weights or "{}")
+                    perf = json.loads(row.performance or "{}")
+                    n_draws = row.n_draws
+                except Exception:
+                    pass
+            if weights:
+                models = sorted(
+                    [{"model": k, "label": _ens.MODEL_LABELS.get(k, k),
+                      "weight": round(weights.get(k, 0.0), 4), "score": round(perf.get(k, 0.0), 4)}
+                     for k in _ens.MODEL_KEYS],
+                    key=lambda m: -m["weight"],
+                )
+                ensemble_block = {"models": models, "n_draws": n_draws, "leader": models[0]["model"] if models else None}
+
     total_eval = len(results)
     total_hits = sum(r.hits for r, _ in results)
     return {
@@ -228,6 +287,7 @@ def analytics(game_type: str | None = None, db: Session = Depends(get_db), user:
         "learning_events": len(logs),
         "current_context": current_context,
         "contextual": contextual,
+        "ensemble": ensemble_block,
         "user": {
             "hits_distribution": dist,
             "timeline": timeline,

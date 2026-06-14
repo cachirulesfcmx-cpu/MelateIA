@@ -163,7 +163,31 @@ def retrain_system(game_type: str, db: Session) -> dict:
                     "draws": len([1 for _ in load_draw_rows(db, game_type)])}
         history = [r["numbers"] for r in load_draw_rows(db, game_type)]
         model = get_model(game_type, cfg.max_number, history, force=True)
+        # refresh & persist the evolutionary ensemble weights (walk-forward)
+        try:
+            update_ensemble_weights(db, cfg, history)
+        except Exception:
+            pass
         return {"game_type": game_type, "trained": model.trained, "backend": model.backend,
                 "draws": len(history)}
     except Exception as e:
         return {"game_type": game_type, "trained": False, "error": str(e)}
+
+
+def update_ensemble_weights(db: Session, cfg: GameConfig, history: list[list[int]]) -> dict | None:
+    """Recompute and persist the ensemble's evolved weights for a combination game."""
+    if cfg.kind == "positional" or len(history) < 40:
+        return None
+    import json
+    from .models import EnsembleWeight
+    from .engine import ensemble
+    info = ensemble.compute_weights(history, cfg, force=True)
+    row = db.query(EnsembleWeight).filter(EnsembleWeight.game_type == cfg.key).first()
+    if not row:
+        row = EnsembleWeight(game_type=cfg.key)
+        db.add(row)
+    row.weights = json.dumps(info["weights"])
+    row.performance = json.dumps(info["scores"])
+    row.n_draws = len(history)
+    db.commit()
+    return info
