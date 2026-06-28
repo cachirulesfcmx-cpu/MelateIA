@@ -23,10 +23,12 @@ export function StrategySelector({
   onChange: (k: string) => void;
 }) {
   const current = strategies.find((s) => s.key === value);
+  // surface the flagship engine first
+  const ordered = [...strategies].sort((a, b) => (a.key === "evolutiva" ? -1 : b.key === "evolutiva" ? 1 : 0));
   return (
     <div>
       <div className="grid grid-cols-2 gap-2">
-        {strategies.map((s) => {
+        {ordered.map((s) => {
           const active = s.key === value;
           return (
             <button

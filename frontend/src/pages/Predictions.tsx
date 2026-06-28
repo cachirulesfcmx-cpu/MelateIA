@@ -17,7 +17,7 @@ export default function Predictions() {
   const { notify } = useToast();
 
   const [game, setGame] = useState(getDefaultGame());
-  const [strategy, setStrategy] = useState("hibrida");
+  const [strategy, setStrategy] = useState("evolutiva");
   const [count, setCount] = useState(5);
   const [combos, setCombos] = useState<GeneratedCombo[]>([]);
   const [loading, setLoading] = useState(false);
