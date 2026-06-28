@@ -127,6 +127,30 @@ def test_grouped_draw_melate_revancha_revanchita(client):
     assert client.post("/api/draws/grouped", headers=uh, json=payload).status_code == 403
 
 
+def test_delete_draw_reverts_predictions(client):
+    """Admin can delete a mistaken draw; evaluated predictions revert to pending."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+    sp = client.post("/api/predictions/save", headers=uh, json={"game_type": "melate", "strategy": "balanceada", "numbers": [5, 9, 14, 20, 31, 48]})
+    pred_id = sp.json()["id"]
+    cr = client.post("/api/draws", headers=ah, json={"game_type": "melate", "numbers": [5, 9, 14, 50, 51, 52], "draw_number": 96001})
+    draw_id = cr.json()["draw"]["id"]
+    # non-admin cannot delete
+    assert client.delete(f"/api/draws/{draw_id}", headers=uh).status_code == 403
+    d = client.delete(f"/api/draws/{draw_id}", headers=ah)
+    assert d.status_code == 200, d.text
+    assert d.json()["draw_number"] == 96001
+    # the draw is gone
+    rows = client.get("/api/draws?game_type=melate&limit=200", headers=uh).json()["draws"]
+    assert all(r["draw_number"] != 96001 for r in rows)
+    # the prediction reverted to pendiente
+    hist = client.get("/api/predictions/history?game_type=melate", headers=uh).json()
+    mine = next((p for p in hist if p["id"] == pred_id), None)
+    assert mine is not None and mine["status"] == "pendiente"
+    # deleting a missing draw → 404
+    assert client.delete(f"/api/draws/{draw_id}", headers=ah).status_code == 404
+
+
 def test_official_draw_evaluates_all_and_analytics(client):
     uh = auth(client, "demo@melateai.pro", "demo1234")
     ah = auth(client, "admin@melateai.pro", "admin1234")

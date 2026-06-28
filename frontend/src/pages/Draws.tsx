@@ -87,6 +87,17 @@ export default function Draws() {
     }
   }
 
+  async function deleteDraw(d: Draw) {
+    if (!window.confirm(`¿Borrar el sorteo #${d.draw_number} (${d.numbers.join(" · ")})? Las predicciones comparadas solo con este sorteo volverán a pendiente.`)) return;
+    try {
+      const r = await api.del<{ predictions_reverted: number }>(`/draws/${d.id}`);
+      notify(`Sorteo #${d.draw_number} borrado${r.predictions_reverted ? ` · ${r.predictions_reverted} predicción(es) a pendiente` : ""}`, "success");
+      load();
+    } catch (err) {
+      notify((err as Error).message, "error");
+    }
+  }
+
   const theme = gameTheme(game);
   const positional = games.find((g) => g.key === game)?.kind === "positional";
   const filtered = search
@@ -271,7 +282,18 @@ export default function Draws() {
                   <GlassCard key={d.id} className="!p-3">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-xs text-white/40 tnum">#{d.draw_number}</span>
-                      <span className="text-[10px] text-white/30">{d.draw_date} · {d.source}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-white/30">{d.draw_date} · {d.source}</span>
+                        {user?.is_admin && (
+                          <button
+                            onClick={() => deleteDraw(d)}
+                            className="text-[11px] text-rose-300/70 hover:text-rose-300 transition px-1"
+                            title="Borrar sorteo"
+                          >
+                            🗑
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div className="flex gap-1.5 flex-wrap">
                       {d.numbers.map((n, i) => (
