@@ -57,18 +57,38 @@ def generate_predictions(payload: PredictionGenerate, db: Session = Depends(get_
     model = get_model(payload.game_type, cfg.max_number, history)
     scorer = model.make_scorer(history)
 
-    # "Evolutiva" = score candidates with the fused evolutionary ensemble
-    # (base models blended with the ML model), not the raw ML model alone.
-    ensemble_info = None
+    # "Evolutiva" = full Genius engine: fuse the 13 base models with evolved
+    # weights, apply the meta-consciousness layer (consensus + error memory +
+    # acceleration), then SAMPLE tickets directly from that distribution — the
+    # way Genius does it, concentrating picks on the favored numbers.
     if payload.strategy == "evolutiva":
         from ..engine import ensemble
-        ensemble_info = ensemble.compute_weights(history, cfg)
-        fused = ensemble.fused_probabilities(history, cfg, weights=ensemble_info["weights"], ml_probs=model.probabilities(history))
-        ranked = sorted(fused.values(), reverse=True)
-        top = sum(ranked[: cfg.max_number // 4]) or 1.0
-
-        def scorer(combo: list[int]) -> float:  # noqa: F811
-            return min(1.0, sum(fused.get(n, 0.0) for n in combo) / (top * 0.6 + 1e-6))
+        info = ensemble.compute_weights(history, cfg)
+        ml_probs = model.probabilities(history)
+        fused = ensemble.fused_probabilities(history, cfg, weights=info["weights"], ml_probs=ml_probs)
+        model_probs = ensemble.all_model_probabilities(history, cfg)
+        evaluated = _recent_evaluated(db, payload.game_type)
+        meta = ensemble.meta_probabilities(history, cfg, fused, model_probs=model_probs, evaluated=evaluated)
+        tickets = ensemble.generate_genius_tickets(meta, history, cfg, count=payload.count)
+        lead = max(info["weights"], key=info["weights"].get)
+        lead_pct = round(info["weights"][lead] * 100)
+        mem = f" · memoria de {len(evaluated)} sorteos evaluados" if evaluated else ""
+        combos = []
+        for tk in tickets:
+            t, sc = tk["ticket"], tk["score"]
+            combos.append({
+                "numbers": t,
+                "score": round(float(sc["total"]), 4),
+                "explanation": (
+                    f"Evolutiva (Genius · 13 modelos + meta{mem} · líder "
+                    f"{ensemble.MODEL_LABELS.get(lead, lead)} {lead_pct}%). "
+                    f"Pares/impares {sc['evens']}/{sc['odds']}, suma {sc['sum']}, "
+                    f"dispersión {round(sc['spread'], 2)}."
+                ),
+                "strategy": "evolutiva",
+                "features": combination_features(t, stats),
+            })
+        return {"game_type": payload.game_type, "strategy": "evolutiva", "combos": combos, "routed_to": None, "context": None}
 
     # "Adaptativa" = contextual bandit: route to the best strategy learned for
     # the CURRENT regime, falling back to the global best, then the hybrid engine.
@@ -91,13 +111,24 @@ def generate_predictions(payload: PredictionGenerate, db: Session = Depends(get_
         for c in combos:
             c["strategy"] = "adaptativa"
             c["explanation"] = f"Adaptativa (IA · régimen {ctx}) → estrategia mejor evaluada: {STRATEGIES[effective]['label']}. " + c["explanation"]
-    if payload.strategy == "evolutiva" and ensemble_info:
-        from ..engine.ensemble import MODEL_LABELS
-        lead = max(ensemble_info["weights"], key=ensemble_info["weights"].get)
-        lead_pct = round(ensemble_info["weights"][lead] * 100)
-        for c in combos:
-            c["explanation"] = f"Evolutiva (ensemble · modelo líder: {MODEL_LABELS.get(lead, lead)} {lead_pct}%). " + c["explanation"]
     return {"game_type": payload.game_type, "strategy": payload.strategy, "combos": combos, "routed_to": routed, "context": ctx}
+
+
+def _recent_evaluated(db: Session, game_type: str, limit: int = 15) -> list[tuple[set, set]]:
+    """Last evaluated predictions for a game as (predicted_set, actual_set),
+    most recent last — feeds the ensemble meta layer's error memory."""
+    rows = (
+        db.query(Prediction.numbers, Draw.numbers)
+        .join(PredictionResult, PredictionResult.prediction_id == Prediction.id)
+        .join(Draw, Draw.id == PredictionResult.draw_id)
+        .filter(Prediction.game_type == game_type)
+        .order_by(PredictionResult.evaluated_at.desc())
+        .limit(limit)
+        .all()
+    )
+    out = [(set(str_to_numbers(p)), set(str_to_numbers(a))) for p, a in rows]
+    out.reverse()
+    return out
 
 
 from pydantic import BaseModel  # noqa: E402

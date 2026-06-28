@@ -1,23 +1,38 @@
-"""Evolutionary ensemble (ported & adapted from the "Melate Genius" engine).
+"""Evolutionary ensemble — full port of the "Melate Genius" engine.
 
-A set of cheap statistical base models, each producing a per-number probability
-distribution over the history. Their weights are *evolved* by walk-forward
-evaluation (how often each model's top picks actually appeared) and combined via
-a temperature softmax — so the mix self-adjusts as the data grows.
+13 statistical base models, each producing a per-number probability distribution
+over the history. Their weights are *evolved* by walk-forward evaluation (top-k
+precision of each model over recent draws) and combined via a temperature
+softmax. On top of the fused distribution a "meta-consciousness" layer applies:
+  - consensus boost (numbers many models agree on)
+  - error memory (boost numbers that came out but we ignored; penalize repeated
+    misses) — from the user's real evaluated predictions
+  - acceleration (numbers trending up in the last draws)
 
-This is fully self-contained and only applies to COMBINATION games (Melate,
-Revancha, Retro, Revanchita, Chispazo). Tris (positional) keeps its own engine.
+Tickets are then sampled DIRECTLY from this distribution (roulette wheel), the
+way Genius does it — so suggestions concentrate on the numbers the models favor,
+instead of being dispersed by symbolic strategy profiles.
 
-Honest framing: the lottery is random; this adds signal diversity + calibration
-and a transparent "which model leads now" view — it does not predict the draw.
+Only applies to COMBINATION games. Tris (positional) keeps its own engine.
+
+Honest framing: the lottery is random; this reproduces Genius's behavior and
+calibration — it does not make the draw predictable.
 """
 from __future__ import annotations
 
 import math
+import random
 from collections import defaultdict
 from heapq import nlargest
 
 from .game_config import GameConfig
+
+# Cap how much history each model digests, for performance on long histories
+# (Chispazo has 10k+ draws). Recency-focused, matches Genius's recency emphasis.
+HIST_CAP = 800
+# Walk-forward evaluation window (last N draws) and per-step train cap.
+WF_WINDOW = 70
+WF_TRAIN_CAP = 450
 
 
 def _normalize(d: dict[int, float]) -> dict[int, float]:
@@ -34,6 +49,7 @@ def _nums(cfg: GameConfig) -> range:
 
 # --------------------------------------------------------------------------- #
 # Base models: history (oldest->newest) -> {number: probability}
+# Faithful ports of the Genius JS models (1-indexed, normalized).
 # --------------------------------------------------------------------------- #
 def m_bayes_decay(history, cfg, decay: float = 0.97) -> dict[int, float]:
     counts = {n: 1.0 for n in _nums(cfg)}  # Laplace prior
@@ -46,123 +62,329 @@ def m_bayes_decay(history, cfg, decay: float = 0.97) -> dict[int, float]:
     return _normalize(counts)
 
 
-def m_markov(history, cfg, laplace: float = 0.5) -> dict[int, float]:
-    nums = list(_nums(cfg))
-    if len(history) < 10:
-        return {n: 1.0 / len(nums) for n in nums}
-    trans = defaultdict(lambda: defaultdict(float))
-    for t in range(1, len(history)):
-        for i in history[t - 1]:
-            if 1 <= i <= cfg.max_number:
-                row = trans[i]
-                for j in history[t]:
-                    if 1 <= j <= cfg.max_number:
-                        row[j] += 1.0
-    last = history[-1]
-    probs = {n: 0.0 for n in nums}
-    for j in nums:
-        acc = 0.0
-        for i in last:
-            row = trans.get(i)
-            cnt = (row.get(j, 0.0) if row else 0.0) + laplace
-            row_sum = (sum(row.values()) if row else 0.0) + laplace * len(nums)
-            acc += cnt / row_sum if row_sum else 0.0
-        probs[j] = acc / max(1, len(last))
-    return _normalize(probs)
-
-
 def m_gap_hazard(history, cfg) -> dict[int, float]:
-    total = len(history)
-    freq = {n: 0 for n in _nums(cfg)}
-    last_idx = {n: None for n in _nums(cfg)}
-    for idx, draw in enumerate(history):
-        for x in draw:
-            if 1 <= x <= cfg.max_number:
-                freq[x] += 1
-                last_idx[x] = idx
-    probs = {}
-    for n in _nums(cfg):
-        avg_gap = total / max(1, freq[n])
-        cur_gap = (total - 1 - last_idx[n]) if last_idx[n] is not None else total
-        probs[n] = min(cur_gap / avg_gap, 2.0) if avg_gap else 1.0
-    return _normalize(probs)
+    """Survival-analysis hazard with a logistic curve (Genius M2)."""
+    maxn = cfg.max_number
+    last = {n: -1 for n in range(maxn + 1)}
+    tot_gap = {n: 0.0 for n in range(maxn + 1)}
+    gap_cnt = {n: 0 for n in range(maxn + 1)}
+    for i, draw in enumerate(history):
+        for n in draw:
+            if 1 <= n <= maxn:
+                if last[n] >= 0:
+                    tot_gap[n] += i - last[n]
+                    gap_cnt[n] += 1
+                last[n] = i
+    n = len(history)
+    h = {}
+    for num in _nums(cfg):
+        avg = tot_gap[num] / gap_cnt[num] if gap_cnt[num] > 0 else n / max(1, cfg.pick)
+        cur = n - 1 - last[num] if last[num] >= 0 else n
+        ratio = cur / max(avg, 1)
+        h[num] = 1.0 / (1.0 + math.exp(-1.5 * (ratio - 1)))
+    return _normalize(h)
 
 
 def m_cooccurrence(history, cfg) -> dict[int, float]:
-    pair = defaultdict(float)
-    for draw in history:
-        ds = [x for x in draw if 1 <= x <= cfg.max_number]
-        for a in range(len(ds)):
-            for b in range(len(ds)):
-                if a != b:
-                    pair[(ds[a], ds[b])] += 1.0
-    last = history[-1] if history else []
-    probs = {n: 0.0 for n in _nums(cfg)}
-    for j in _nums(cfg):
-        probs[j] = sum(pair.get((i, j), 0.0) for i in last) + 1e-3
-    return _normalize(probs)
+    cooc = defaultdict(float)
+    for r in history:
+        rs = [x for x in r if 1 <= x <= cfg.max_number]
+        for i in range(len(rs)):
+            for j in range(i + 1, len(rs)):
+                a, b = (rs[i], rs[j]) if rs[i] < rs[j] else (rs[j], rs[i])
+                cooc[(a, b)] += 1.0
+    recent_nums = set(x for r in history[-30:] for x in r if 1 <= x <= cfg.max_number)
+    s = {}
+    for num in _nums(cfg):
+        acc = 0.0
+        for o in recent_nums:
+            if o != num:
+                a, b = (num, o) if num < o else (o, num)
+                acc += cooc.get((a, b), 0.0)
+        s[num] = acc
+    return _normalize(s)
+
+
+def m_frequency(history, cfg) -> dict[int, float]:
+    f = {n: 0.0 for n in _nums(cfg)}
+    for r in history:
+        for x in r:
+            if 1 <= x <= cfg.max_number:
+                f[x] += 1.0
+    return _normalize(f)
 
 
 def m_momentum(history, cfg, alpha: float = 0.15) -> dict[int, float]:
     ewma = {n: 0.0 for n in _nums(cfg)}
-    for draw in history:
-        drawn = set(draw)
+    for r in history:
+        drawn = set(r)
         for n in _nums(cfg):
             ewma[n] = alpha * (1.0 if n in drawn else 0.0) + (1 - alpha) * ewma[n]
-    # shift so nothing is exactly zero
-    return _normalize({n: v + 1e-4 for n, v in ewma.items()})
+    return _normalize({n: v + 1e-9 for n, v in ewma.items()})
+
+
+def m_markov(history, cfg, laplace: float = 0.5) -> dict[int, float]:
+    maxn = cfg.max_number
+    nums = list(_nums(cfg))
+    if len(history) < 10:
+        return {n: 1.0 / maxn for n in nums}
+    trans = defaultdict(lambda: defaultdict(float))
+    for t in range(1, len(history)):
+        for i in history[t - 1]:
+            if 1 <= i <= maxn:
+                row = trans[i]
+                for j in history[t]:
+                    if 1 <= j <= maxn:
+                        row[j] += 1.0
+    last = history[-1]
+    probs = {}
+    for j in nums:
+        p = 0.0
+        for i in last:
+            if 1 <= i <= maxn:
+                row = trans.get(i, {})
+                cnt = row.get(j, 0.0) + laplace
+                row_sum = sum(row.values()) + laplace * maxn
+                p += cnt / row_sum if row_sum else 0.0
+        probs[j] = p / max(1, len(last))
+    return _normalize(probs)
+
+
+def m_fourier(history, cfg) -> dict[int, float]:
+    """Cyclic-pattern model via autocorrelation (Genius M7), numpy-vectorized."""
+    import numpy as np
+    n = len(history)
+    maxn = cfg.max_number
+    if n < 50:
+        return {x: 1.0 / maxn for x in _nums(cfg)}
+    max_lag = min(80, n // 3)
+    # binary occurrence matrix: rows = numbers (1..maxn), cols = draws
+    mat = np.zeros((maxn + 1, n), dtype=np.float64)
+    for t, draw in enumerate(history):
+        for x in draw:
+            if 1 <= x <= maxn:
+                mat[x, t] = 1.0
+    series = mat[1:]                       # (maxn, n)
+    mean = series.mean(axis=1, keepdims=True)
+    centered = series - mean
+    var0 = (centered ** 2).mean(axis=1)    # (maxn,)
+    probs = {}
+    base = 1.0 / maxn
+    for idx in range(maxn):
+        num = idx + 1
+        if var0[idx] < 1e-9:
+            probs[num] = base
+            continue
+        c = centered[idx]
+        best_lag, best_corr = 0, 0.0
+        for lag in range(2, max_lag + 1):
+            cov = float(np.dot(c[:n - lag], c[lag:])) / (n - lag)
+            corr = cov / var0[idx]
+            if abs(corr) > abs(best_corr):
+                best_corr, best_lag = corr, lag
+        prob = base
+        if abs(best_corr) > 0.05 and best_lag > 0:
+            nz = np.nonzero(series[idx])[0]
+            if nz.size:
+                since_last = n - 1 - int(nz[-1])
+                phase = since_last % best_lag
+                dist_return = (best_lag - phase) % best_lag
+                boost = math.exp(-dist_return / (best_lag * 0.3)) * abs(best_corr)
+                prob = base * (1 + 3 * boost * (1 if best_corr >= 0 else -1))
+        probs[num] = max(prob, 1e-6)
+    return _normalize(probs)
+
+
+def m_positional(history, cfg) -> dict[int, float]:
+    """Per-position (sorted) histogram aggregated per number (Genius M8)."""
+    pick = cfg.pick
+    maxn = cfg.max_number
+    pos_hist = [[0.5] * (maxn + 1) for _ in range(pick)]
+    for draw in history:
+        s = sorted(x for x in draw if 1 <= x <= maxn)
+        for pos, n in enumerate(s):
+            if pos < pick:
+                pos_hist[pos][n] += 1
+    for pos in range(pick):
+        tot = sum(pos_hist[pos])
+        if tot > 0:
+            pos_hist[pos] = [v / tot for v in pos_hist[pos]]
+    probs = {}
+    for n in _nums(cfg):
+        probs[n] = sum(pos_hist[pos][n] for pos in range(pick)) / pick
+    return _normalize(probs)
+
+
+def m_gaussian(history, cfg) -> dict[int, float]:
+    """Fit numbers to the typical draw-sum distribution (Genius M9)."""
+    pick = cfg.pick
+    if not history:
+        return {n: 1.0 / cfg.max_number for n in _nums(cfg)}
+    sums = [sum(r) for r in history]
+    mu_sum = sum(sums) / len(sums)
+    sig_sum = math.sqrt(sum((x - mu_sum) ** 2 for x in sums) / len(sums)) or 1.0
+    freq = {n: 0.0 for n in _nums(cfg)}
+    for r in history:
+        for x in r:
+            if 1 <= x <= cfg.max_number:
+                freq[x] += 1.0
+    base_total = sum(freq.values()) or 1.0
+    expected = mu_sum / pick
+    sig = sig_sum / pick
+    probs = {}
+    for n in _nums(cfg):
+        base = freq[n] / base_total
+        fit = math.exp(-((n - expected) ** 2) / (2 * sig ** 2 + 1))
+        probs[n] = base * 0.7 + (fit * (1.0 / cfg.max_number)) * 0.3
+    return _normalize(probs)
+
+
+def m_delta(history, cfg) -> dict[int, float]:
+    """Gap-between-sorted-numbers pattern model (Genius M10)."""
+    maxn = cfg.max_number
+    if len(history) < 20:
+        return {n: 1.0 / maxn for n in _nums(cfg)}
+    delta_freq = {d: 0.0 for d in range(maxn + 1)}
+    delta_tot = 0
+    for draw in history:
+        s = sorted(x for x in draw if 1 <= x <= maxn)
+        for i in range(1, len(s)):
+            d = s[i] - s[i - 1]
+            if 1 <= d <= maxn:
+                delta_freq[d] += 1
+                delta_tot += 1
+    dp = {d: delta_freq[d] / (delta_tot or 1) for d in range(maxn + 1)}
+    probs = {}
+    for num in _nums(cfg):
+        sc = 0.0
+        for d in range(1, min(num - 1, maxn) + 1):
+            sc += dp[d]
+        d = 1
+        while d + num <= maxn:
+            sc += dp[d]
+            d += 1
+        probs[num] = sc
+    return _normalize(probs)
 
 
 def m_hot_streak(history, cfg, window: int = 15) -> dict[int, float]:
-    recent = history[-window:] if history else []
-    counts = {n: 0.0 for n in _nums(cfg)}
-    for draw in recent:
-        for x in draw:
-            if 1 <= x <= cfg.max_number:
-                counts[x] += 1.0
-    return _normalize({n: v + 1e-3 for n, v in counts.items()})
+    maxn = cfg.max_number
+    base = 1.0 / maxn
+    if len(history) < 15:
+        return {n: base for n in _nums(cfg)}
+    w = min(window, len(history))
+    recent = history[-w:]
+    freq = {n: 0.0 for n in _nums(cfg)}
+    for r in recent:
+        for x in r:
+            if 1 <= x <= maxn:
+                freq[x] += 1.0
+    expected = w * cfg.pick / maxn
+    probs = {}
+    for n in _nums(cfg):
+        ratio = freq[n] / max(expected, 0.1)
+        if ratio >= 2.0:
+            probs[n] = base * 1.8
+        elif ratio >= 1.4:
+            probs[n] = base * 1.3
+        elif ratio == 0:
+            probs[n] = base * 1.2
+        else:
+            probs[n] = base * (0.8 + ratio * 0.2)
+    return _normalize(probs)
 
 
 def m_zone_pressure(history, cfg, zones: int = 4, window: int = 20) -> dict[int, float]:
-    recent = history[-window:] if history else []
-    max_n = cfg.max_number
-    size = max_n / zones
-    observed = [0.0] * zones
-    for draw in recent:
-        for x in draw:
-            if 1 <= x <= max_n:
-                z = min(zones - 1, int((x - 1) // size))
-                observed[z] += 1
-    total = sum(observed) or 1.0
-    expected = total / zones
-    # zones with a deficit (under-represented) get more pressure
-    deficit = [max(0.0, expected - observed[z]) + 0.1 for z in range(zones)]
+    maxn = cfg.max_number
+    base = 1.0 / maxn
+    if len(history) < 10:
+        return {n: base for n in _nums(cfg)}
+    zone_size = math.ceil(maxn / zones)
+    recent = history[-window:]
+    zfreq = [0.0] * zones
+    ztotal = 0
+    for r in recent:
+        for n in r:
+            if 1 <= n <= maxn:
+                z = min((n - 1) // zone_size, zones - 1)
+                zfreq[z] += 1
+                ztotal += 1
+    zexp = ztotal / zones if zones else 0
     probs = {}
     for n in _nums(cfg):
-        z = min(zones - 1, int((n - 1) // size))
-        probs[n] = deficit[z]
+        z = min((n - 1) // zone_size, zones - 1)
+        deficit = max(0.0, zexp - zfreq[z])
+        probs[n] = base * (1 + (deficit / max(zexp, 1)) * 0.5)
+    return _normalize(probs)
+
+
+def m_pair_lift(history, cfg) -> dict[int, float]:
+    """Lift of co-appearance vs independence (Genius M13)."""
+    maxn = cfg.max_number
+    if len(history) < 30:
+        return {n: 1.0 / maxn for n in _nums(cfg)}
+    freq = {n: 0.0 for n in range(maxn + 1)}
+    for r in history:
+        for x in r:
+            if 1 <= x <= maxn:
+                freq[x] += 1.0
+    n = len(history)
+    cooc = defaultdict(float)
+    for r in history:
+        rs = [x for x in r if 1 <= x <= maxn]
+        for i in range(len(rs)):
+            for j in range(i + 1, len(rs)):
+                a, b = (rs[i], rs[j]) if rs[i] < rs[j] else (rs[j], rs[i])
+                cooc[(a, b)] += 1.0
+    recent_set = set(x for r in history[-25:] for x in r if 1 <= x <= maxn)
+    pick = cfg.pick
+    probs = {}
+    for num in _nums(cfg):
+        lift = 0.0
+        for o in recent_set:
+            if o == num:
+                continue
+            a, b = (num, o) if num < o else (o, num)
+            p_ab = cooc.get((a, b), 0.0) / n
+            p_a = freq[num] / (n * pick)
+            p_b = freq[o] / (n * pick)
+            if p_a > 0 and p_b > 0:
+                lift += p_ab / (p_a * p_b * n)
+        probs[num] = lift
     return _normalize(probs)
 
 
 MODELS = {
     "bayes_decay": m_bayes_decay,
-    "markov": m_markov,
     "gap_hazard": m_gap_hazard,
     "cooccurrence": m_cooccurrence,
+    "frequency": m_frequency,
     "momentum": m_momentum,
+    "markov": m_markov,
+    "fourier": m_fourier,
+    "positional": m_positional,
+    "gaussian": m_gaussian,
+    "delta": m_delta,
     "hot_streak": m_hot_streak,
     "zone_pressure": m_zone_pressure,
+    "pair_lift": m_pair_lift,
 }
 MODEL_KEYS = list(MODELS.keys())
 
 MODEL_LABELS = {
     "bayes_decay": "Bayesiano (decay)",
-    "markov": "Markov (orden 1)",
     "gap_hazard": "Atraso (hazard)",
     "cooccurrence": "Co-ocurrencia",
+    "frequency": "Frecuencia",
     "momentum": "Momentum (EWMA)",
+    "markov": "Markov (orden 1)",
+    "fourier": "Fourier (ciclos)",
+    "positional": "Posicional",
+    "gaussian": "Mezcla gaussiana",
+    "delta": "Patrón delta",
     "hot_streak": "Racha caliente",
     "zone_pressure": "Presión por zona",
+    "pair_lift": "Pair lift",
 }
 
 
@@ -171,11 +393,12 @@ def _topk_for(cfg: GameConfig) -> int:
 
 
 def all_model_probabilities(history, cfg) -> dict[str, dict[int, float]]:
-    return {k: fn(history, cfg) for k, fn in MODELS.items()}
+    h = history[-HIST_CAP:] if len(history) > HIST_CAP else history
+    return {k: fn(h, cfg) for k, fn in MODELS.items()}
 
 
-def walk_forward_scores(history, cfg, window: int = 80) -> dict[str, float]:
-    """Hit-rate of each model's top-k over the last `window` draws (no look-ahead)."""
+def walk_forward_scores(history, cfg, window: int = WF_WINDOW) -> dict[str, float]:
+    """Top-k precision of each model over the last `window` draws (no look-ahead)."""
     n = len(history)
     start = max(30, n - window)
     if start >= n:
@@ -184,18 +407,17 @@ def walk_forward_scores(history, cfg, window: int = 80) -> dict[str, float]:
     hits = {k: 0.0 for k in MODELS}
     trials = 0
     for t in range(start, n):
-        train = history[:t]
+        train = history[max(0, t - WF_TRAIN_CAP):t]
         actual = set(history[t])
         for k, fn in MODELS.items():
             probs = fn(train, cfg)
-            top = set(n for n, _ in nlargest(topk, probs.items(), key=lambda kv: kv[1]))
+            top = set(num for num, _ in nlargest(topk, probs.items(), key=lambda kv: kv[1]))
             hits[k] += len(actual & top)
         trials += len(actual)
     return {k: hits[k] / max(1, trials) for k in MODELS}
 
 
 def evolve_weights(scores: dict[str, float], temperature: float = 50.0, floor: float = 0.03) -> dict[str, float]:
-    """Softmax of model scores (sharp), with a diversity floor."""
     if not scores:
         return {}
     mx = max(scores.values())
@@ -208,12 +430,11 @@ def evolve_weights(scores: dict[str, float], temperature: float = 50.0, floor: f
     return {k: v / s for k, v in w.items()}
 
 
-# in-memory cache so /ml/probabilities?source=ensemble is cheap between draws
+# in-memory cache so requests are cheap between draws
 _ENS_CACHE: dict[str, dict] = {}
 
 
 def compute_weights(history, cfg, force: bool = False) -> dict:
-    """Walk-forward scores + evolved weights, cached per (game, history length)."""
     key = cfg.key
     cached = _ENS_CACHE.get(key)
     if cached and not force and cached.get("n_draws") == len(history):
@@ -227,9 +448,8 @@ def compute_weights(history, cfg, force: bool = False) -> dict:
 
 def fused_probabilities(history, cfg, weights: dict[str, float] | None = None,
                         ml_probs: dict[int, float] | None = None, ml_blend: float = 0.5) -> dict[int, float]:
-    """Weighted fusion of the base models, optionally blended 50/50 with the
-    existing XGBoost/GradientBoosting per-number model (the prior MelateIA model
-    becomes one more voice in the ensemble)."""
+    """Weighted fusion of the 13 base models, optionally blended with the XGBoost
+    per-number model (the prior MelateIA model becomes one more voice)."""
     if weights is None:
         weights = compute_weights(history, cfg)["weights"]
     model_probs = all_model_probabilities(history, cfg)
@@ -245,3 +465,152 @@ def fused_probabilities(history, cfg, weights: dict[str, float] | None = None,
         ml = _normalize({n: ml_probs.get(n, 0.0) for n in _nums(cfg)})
         fused = _normalize({n: (1 - ml_blend) * fused[n] + ml_blend * ml[n] for n in _nums(cfg)})
     return fused
+
+
+def meta_probabilities(history, cfg, fused: dict[int, float],
+                       model_probs: dict[str, dict[int, float]] | None = None,
+                       evaluated: list[tuple[set, set]] | None = None) -> dict[int, float]:
+    """Genius "meta-consciousness": consensus + error memory + acceleration.
+
+    `evaluated` is a list of (predicted_set, actual_set) from recent real
+    evaluated predictions (most recent last). Optional — consensus and
+    acceleration work without it.
+    """
+    maxn = cfg.max_number
+    if model_probs is None:
+        model_probs = all_model_probabilities(history, cfg)
+
+    # 1. consensus: fraction of models that rank n in their top 15
+    consensus = {n: 0 for n in range(maxn + 1)}
+    for probs in model_probs.values():
+        for num, _ in nlargest(15, probs.items(), key=lambda kv: kv[1]):
+            consensus[num] += 1
+    nmodels = len(model_probs) or 1
+    consensus = {n: c / nmodels for n, c in consensus.items()}
+
+    # 2. error memory from last 15 evaluated predictions
+    over = {n: 0 for n in range(maxn + 1)}
+    under = {n: 0 for n in range(maxn + 1)}
+    recent_checked = (evaluated or [])[-15:]
+    n15 = len(recent_checked) or 1
+    for predicted, actual in recent_checked:
+        for n in predicted:
+            if 1 <= n <= maxn and n not in actual:
+                over[n] += 1
+        for n in actual:
+            if 1 <= n <= maxn and n not in predicted:
+                under[n] += 1
+
+    # 3. acceleration: recent (last 10) vs older (prev 10) frequency
+    recent_draws = history[-10:]
+    older_draws = history[-20:-10]
+    rf = {n: 0 for n in range(maxn + 1)}
+    of = {n: 0 for n in range(maxn + 1)}
+    for d in recent_draws:
+        for n in d:
+            if 1 <= n <= maxn:
+                rf[n] += 1
+    for d in older_draws:
+        for n in d:
+            if 1 <= n <= maxn:
+                of[n] += 1
+    rn = len(recent_draws) or 1
+    on = len(older_draws) or 1
+
+    meta = {}
+    for n in _nums(cfg):
+        base = fused.get(n, 0.0)
+        consensus_bonus = consensus[n] * 0.25 * base
+        over_penalty = (over[n] / n15) * 0.30 * base
+        under_bonus = (under[n] / n15) * 0.20 * base
+        rr, orr = rf[n] / rn, of[n] / on
+        accel_bonus = (rr - orr) * 0.5 * base if rr > orr else 0.0
+        meta[n] = max(0.0001, base + consensus_bonus - over_penalty + under_bonus + accel_bonus)
+    return _normalize(meta)
+
+
+# --------------------------------------------------------------------------- #
+# Ticket generation — sample directly from the distribution (Genius style)
+# --------------------------------------------------------------------------- #
+def _jaccard(a, b) -> float:
+    A, B = set(a), set(b)
+    inter = len(A & B)
+    return inter / (len(A) + len(B) - inter or 1)
+
+
+def _sample_ticket(probs: dict[int, float], cfg: GameConfig, rng: random.Random) -> list[int]:
+    pick = cfg.pick
+    nums = list(_nums(cfg))
+    chosen: list[int] = []
+    used: set[int] = set()
+    attempts = 0
+    while len(chosen) < pick and attempts < 1000:
+        attempts += 1
+        r = rng.random()
+        cum = 0.0
+        for n in nums:
+            if n in used:
+                continue
+            cum += probs.get(n, 0.0)
+            if r <= cum:
+                chosen.append(n)
+                used.add(n)
+                break
+    for n in nums:
+        if len(chosen) >= pick:
+            break
+        if n not in used:
+            chosen.append(n)
+            used.add(n)
+    return sorted(chosen)
+
+
+def score_ticket(t: list[int], probs: dict[int, float], history, cfg) -> dict:
+    """Genius scoreTicket: 0.45 prob + 0.18 parity + 0.17 spread + 0.20 gap."""
+    maxn = cfg.max_number
+    pick = len(t) or cfg.pick
+    pr = sum(math.log(max(probs.get(n, 1e-10), 1e-10)) for n in t) / pick
+    evens = sum(1 for n in t if n % 2 == 0)
+    parity = 1 - abs(evens / pick - 0.5) * 2
+    decs = {(n - 1) // 10 for n in t}
+    spread = len(decs) / math.ceil(maxn / 10)
+    freq = {n: 0 for n in range(maxn + 1)}
+    last = {n: -1 for n in range(maxn + 1)}
+    for i, r in enumerate(history):
+        for x in r:
+            if 0 <= x <= maxn:
+                freq[x] += 1
+                last[x] = i
+    n = len(history)
+    gap = 0.0
+    for num in t:
+        avg = n / max(freq[num], 1)
+        cur = n - 1 - last[num] if last[num] >= 0 else n
+        gap += (min(cur / avg, 2) if avg > 0 else 0.0) / pick
+    prob_score = math.exp(pr)
+    total = 0.45 * prob_score + 0.18 * parity + 0.17 * spread + 0.20 * gap
+    return {"prob_score": prob_score, "total": total, "parity": parity,
+            "spread": spread, "gap": gap, "evens": evens, "odds": pick - evens,
+            "sum": sum(t)}
+
+
+def generate_genius_tickets(probs: dict[int, float], history, cfg, count: int = 5,
+                            seed: int | None = None) -> list[dict]:
+    """Sample `count` diverse tickets from `probs`, scored & ranked Genius-style."""
+    rng = random.Random(seed)
+    tickets: list[dict] = []
+    used: list[list[int]] = []
+    tries = 0
+    max_tries = count * 50
+    while len(tickets) < count and tries < max_tries:
+        tries += 1
+        t = _sample_ticket(probs, cfg, rng)
+        if any(_jaccard(t, u) > 0.6 for u in used) and tries < max_tries * 0.7:
+            continue
+        tickets.append({"ticket": t, "score": score_ticket(t, probs, history, cfg)})
+        used.append(t)
+    while len(tickets) < count:
+        t = _sample_ticket(probs, cfg, rng)
+        tickets.append({"ticket": t, "score": score_ticket(t, probs, history, cfg)})
+    tickets.sort(key=lambda x: x["score"]["total"], reverse=True)
+    return tickets
