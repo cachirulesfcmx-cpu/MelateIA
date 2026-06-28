@@ -16,6 +16,17 @@ interface Props {
   onSaved?: () => void;
 }
 
+type DrawRes = {
+  draw: { draw_number: number; game_type: string };
+  evaluated_predictions: number;
+  users_affected: number;
+  new_hits: unknown[];
+  retrained?: { trained?: boolean } | null;
+};
+
+// Melate, Revancha and Revanchita are the SAME physical draw (same concurso & date).
+const GROUPED = ["melate", "revancha", "revanchita"];
+
 export function AddDrawModal({ open, onClose, games, defaultGame, onSaved }: Props) {
   const { notify } = useToast();
   const [game, setGame] = useState(defaultGame || games[0]?.key || "melate");
@@ -26,6 +37,14 @@ export function AddDrawModal({ open, onClose, games, defaultGame, onSaved }: Pro
   const [drawNumber, setDrawNumber] = useState("");
   const [date, setDate] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // grouped (3-en-1) state
+  const groupedAvailable = GROUPED.every((g) => games.some((x) => x.key === g));
+  const [grouped, setGrouped] = useState(false);
+  const [gNums, setGNums] = useState<Record<string, number[]>>({ melate: [], revancha: [], revanchita: [] });
+  const [gText, setGText] = useState<Record<string, string>>({ melate: "", revancha: "", revanchita: "" });
+  const [bonus, setBonus] = useState("");
+  const [tab, setTab] = useState("melate");
 
   const cfg = games.find((g) => g.key === game);
   const theme = gameTheme(game);
@@ -48,22 +67,73 @@ export function AddDrawModal({ open, onClose, games, defaultGame, onSaved }: Pro
     setText("");
     setDrawNumber("");
     setDate("");
+    setGNums({ melate: [], revancha: [], revanchita: [] });
+    setGText({ melate: "", revancha: "", revanchita: "" });
+    setBonus("");
+    setTab("melate");
+  }
+
+  function toggleGrouped(g: string, n: number) {
+    setGNums((s) => {
+      const cur = s[g] || [];
+      const next = cur.includes(n) ? cur.filter((x) => x !== n) : cur.length < 6 ? [...cur, n] : cur;
+      return { ...s, [g]: next };
+    });
+  }
+
+  async function saveGrouped() {
+    // build entries from balls or text
+    const entries: Record<string, { numbers?: number[]; text?: string; additional?: number }> = {};
+    let any = false;
+    for (const g of GROUPED) {
+      const hasText = mode === "text" && gText[g].trim();
+      const hasBalls = mode === "balls" && (gNums[g] || []).length > 0;
+      if (!hasText && !hasBalls) continue;
+      if (mode === "balls" && gNums[g].length !== 6) {
+        notify(`${games.find((x) => x.key === g)?.label}: selecciona 6 números (llevas ${gNums[g].length})`, "error");
+        return;
+      }
+      const e: { numbers?: number[]; text?: string; additional?: number } = {};
+      if (mode === "balls") e.numbers = [...gNums[g]].sort((a, b) => a - b);
+      else e.text = gText[g];
+      if (g === "melate" && bonus) e.additional = parseInt(bonus);
+      entries[g] = e;
+      any = true;
+    }
+    if (!any) {
+      notify("Ingresa el resultado de al menos un sorteo", "error");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await api.post<{ draw_number: number; results: DrawRes[]; errors: { game_type: string; error: string }[] }>(
+        "/draws/grouped",
+        { draw_number: drawNumber ? parseInt(drawNumber) : undefined, draw_date: date || undefined, ...entries },
+      );
+      const ok = res.results.map((r) => games.find((x) => x.key === r.draw.game_type)?.label || r.draw.game_type);
+      const totalEval = res.results.reduce((s, r) => s + r.evaluated_predictions, 0);
+      const parts = [`Concurso #${res.draw_number}: ${ok.join(" · ")} guardados`];
+      if (totalEval > 0) parts.push(`${totalEval} predicción(es) evaluadas`);
+      notify(parts.join(" · "), "success");
+      if (res.errors.length) notify(res.errors.map((e) => `${e.game_type}: ${e.error}`).join(" · "), "error");
+      reset();
+      onSaved?.();
+      onClose();
+    } catch (err) {
+      notify((err as Error).message, "error");
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function save() {
+    if (grouped) return saveGrouped();
     setSaving(true);
     try {
       const payload: Record<string, unknown> = {
         game_type: game,
         draw_number: drawNumber ? parseInt(drawNumber) : undefined,
         draw_date: date || undefined,
-      };
-      type DrawRes = {
-        draw: { draw_number: number };
-        evaluated_predictions: number;
-        users_affected: number;
-        new_hits: any[];
-        retrained?: { trained?: boolean } | null;
       };
       let res: DrawRes;
       if (mode === "balls") {
@@ -102,16 +172,44 @@ export function AddDrawModal({ open, onClose, games, defaultGame, onSaved }: Pro
     }
   }
 
+  const tabTheme = gameTheme(tab);
+  const tabCount = (gNums[tab] || []).length;
+
   return (
-    <LiquidModal open={open} onClose={onClose} title="Agregar sorteo real">
+    <LiquidModal open={open} onClose={onClose} title={grouped ? "Agregar sorteo (3 en 1)" : "Agregar sorteo real"}>
       <div className="space-y-4">
-        <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
-          {games.map((g) => (
-            <Capsule key={g.key} active={g.key === game} onClick={() => changeGame(g.key)}>
-              {gameTheme(g.key).emoji} {g.label}
-            </Capsule>
-          ))}
-        </div>
+        {groupedAvailable && (
+          <div className="flex gap-2 p-1 bg-white/5 rounded-2xl">
+            <button
+              onClick={() => setGrouped(false)}
+              className={`flex-1 py-2 rounded-xl text-sm font-semibold transition ${!grouped ? "bg-white/15 text-white" : "text-white/50"}`}
+            >
+              Individual
+            </button>
+            <button
+              onClick={() => setGrouped(true)}
+              className={`flex-1 py-2 rounded-xl text-sm font-semibold transition ${grouped ? "bg-gradient-to-r from-rose-500 to-amber-400 text-white" : "text-white/50"}`}
+            >
+              🎰 Melate · Revancha · Revanchita
+            </button>
+          </div>
+        )}
+
+        {grouped && (
+          <p className="text-[11px] text-white/45 -mt-1 px-1">
+            Son el mismo sorteo: comparten concurso y fecha. Captura los 3 resultados aquí.
+          </p>
+        )}
+
+        {!grouped && (
+          <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+            {games.map((g) => (
+              <Capsule key={g.key} active={g.key === game} onClick={() => changeGame(g.key)}>
+                {gameTheme(g.key).emoji} {g.label}
+              </Capsule>
+            ))}
+          </div>
+        )}
 
         <div className="flex gap-2 p-1 bg-white/5 rounded-2xl">
           <button
@@ -128,7 +226,70 @@ export function AddDrawModal({ open, onClose, games, defaultGame, onSaved }: Pro
           </button>
         </div>
 
-        {mode === "balls" ? (
+        {grouped ? (
+          <div className="space-y-3">
+            {/* per-game tabs with completion badges */}
+            <div className="flex gap-2">
+              {GROUPED.map((g) => {
+                const done = mode === "text" ? gText[g].trim().length > 0 : (gNums[g] || []).length === 6;
+                const partial = mode === "balls" && (gNums[g] || []).length > 0 && (gNums[g] || []).length < 6;
+                return (
+                  <button
+                    key={g}
+                    onClick={() => setTab(g)}
+                    className={`flex-1 py-2 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1 ${
+                      tab === g ? "bg-white/15 text-white ring-1 ring-white/20" : "bg-white/5 text-white/50"
+                    }`}
+                  >
+                    {gameTheme(g).emoji} {games.find((x) => x.key === g)?.label}
+                    {done && <span className="text-emerald-400">✓</span>}
+                    {partial && <span className="text-amber-400">…</span>}
+                  </button>
+                );
+              })}
+            </div>
+
+            {mode === "balls" ? (
+              <>
+                {(gNums[tab] || []).length > 0 && (
+                  <div className="flex gap-1.5 flex-wrap justify-center py-1">
+                    {[...(gNums[tab] || [])].sort((a, b) => a - b).map((n, i) => (
+                      <NumberBall key={n} n={n} size="sm" grad={tabTheme.grad} index={i} onClick={() => toggleGrouped(tab, n)} />
+                    ))}
+                  </div>
+                )}
+                <div className="text-[11px] text-white/40 text-center -mt-1">{tabCount}/6 números</div>
+                <BallSelector maxNumber={56} pick={6} selected={gNums[tab] || []} onToggle={(n) => toggleGrouped(tab, n)} grad={tabTheme.grad} />
+                {tab === "melate" && (
+                  <div>
+                    <label className="text-xs text-white/50 ml-1">Número adicional (R7, opcional)</label>
+                    <input value={bonus} onChange={(e) => setBonus(e.target.value)} className="glass-input w-full mt-1 tnum" placeholder="—" inputMode="numeric" />
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="space-y-2">
+                {GROUPED.map((g) => (
+                  <div key={g}>
+                    <label className="text-xs text-white/50 ml-1 flex items-center gap-1">
+                      {gameTheme(g).emoji} {games.find((x) => x.key === g)?.label}
+                    </label>
+                    <input
+                      value={gText[g]}
+                      onChange={(e) => setGText((s) => ({ ...s, [g]: e.target.value }))}
+                      className="glass-input w-full mt-1 tnum tracking-wide"
+                      placeholder="12 18 23 34 45 51"
+                    />
+                  </div>
+                ))}
+                <div>
+                  <label className="text-xs text-white/50 ml-1">Adicional Melate (R7, opcional)</label>
+                  <input value={bonus} onChange={(e) => setBonus(e.target.value)} className="glass-input w-full mt-1 tnum" placeholder="—" inputMode="numeric" />
+                </div>
+              </div>
+            )}
+          </div>
+        ) : mode === "balls" ? (
           positional ? (
             <PositionalSelector
               length={cfg?.pick || 5}
@@ -184,7 +345,7 @@ export function AddDrawModal({ open, onClose, games, defaultGame, onSaved }: Pro
         </div>
 
         <GlassButton full size="lg" onClick={save} disabled={saving}>
-          {saving ? "Guardando…" : "Guardar y comparar"}
+          {saving ? "Guardando…" : grouped ? "Guardar los 3 y comparar" : "Guardar y comparar"}
         </GlassButton>
         <p className="text-[11px] text-white/40 text-center">
           Al guardar se comparará automáticamente con tus predicciones pendientes.

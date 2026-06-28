@@ -106,6 +106,33 @@ class DrawCreateResult(BaseModel):
     retrained: Optional[dict] = None
 
 
+class GroupedDrawEntry(BaseModel):
+    """One game's result inside a grouped (same-event) submission.
+
+    `numbers` may be omitted/empty to skip that game; `text` is an alternative
+    free-form input ("12 18 23 ..."). `additional` is the bonus (Melate R7).
+    """
+    numbers: Optional[list[int]] = None
+    text: Optional[str] = None
+    additional: Optional[int] = None
+
+
+class GroupedDrawCreate(BaseModel):
+    """Melate + Revancha + Revanchita are the SAME physical draw (same concurso
+    and date). Submit all three at once."""
+    draw_number: Optional[int] = None
+    draw_date: Optional[str] = None
+    melate: Optional[GroupedDrawEntry] = None
+    revancha: Optional[GroupedDrawEntry] = None
+    revanchita: Optional[GroupedDrawEntry] = None
+
+
+class GroupedDrawResult(BaseModel):
+    draw_number: Optional[int] = None
+    results: list[DrawCreateResult]
+    errors: list[dict]
+
+
 # ---------- Predictions ----------
 class PredictionGenerate(BaseModel):
     game_type: str
