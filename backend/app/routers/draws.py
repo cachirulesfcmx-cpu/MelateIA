@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Q
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Draw, User, CsvUpload
+from ..models import Draw, User, CsvUpload, Prediction, PredictionResult
 from ..schemas import (
     DrawCreate, DrawTextCreate, DrawCreateResult, DrawOut,
     GroupedDrawCreate, GroupedDrawResult,
@@ -204,6 +204,33 @@ def create_draw_text(payload: DrawTextCreate, db: Session = Depends(get_db), use
         payload.draw_number, payload.draw_date, None, "manual",
     )
     return _draw_result(draw, ev)
+
+
+@router.delete("/{draw_id}")
+def delete_draw(draw_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_admin)):
+    """Delete a wrongly-entered draw. Removes its evaluation results and reverts
+    any predictions that were only compared against this draw back to pending."""
+    draw = db.query(Draw).filter(Draw.id == draw_id).first()
+    if not draw:
+        raise HTTPException(status_code=404, detail="Sorteo no encontrado")
+    results = db.query(PredictionResult).filter(PredictionResult.draw_id == draw_id).all()
+    pred_ids = {r.prediction_id for r in results}
+    for r in results:
+        db.delete(r)
+    db.flush()
+    reverted = 0
+    for pid in pred_ids:
+        remaining = db.query(PredictionResult).filter(PredictionResult.prediction_id == pid).count()
+        if remaining == 0:
+            p = db.query(Prediction).filter(Prediction.id == pid).first()
+            if p and p.status == "comparada":
+                p.status = "pendiente"
+                reverted += 1
+    info = {"deleted": draw_id, "game_type": draw.game_type, "draw_number": draw.draw_number,
+            "results_removed": len(results), "predictions_reverted": reverted}
+    db.delete(draw)
+    db.commit()
+    return info
 
 
 @router.post("/upload-csv")
