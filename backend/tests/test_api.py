@@ -95,6 +95,38 @@ def test_earnings_and_backtest(client):
     assert b.status_code == 200
 
 
+def test_grouped_draw_melate_revancha_revanchita(client):
+    """One card adds the same physical draw to the 3 games at once."""
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+    payload = {
+        "draw_number": 95500,
+        "draw_date": "2026-06-28",
+        "melate": {"numbers": [4, 11, 22, 33, 44, 55], "additional": 7},
+        "revancha": {"numbers": [1, 2, 3, 50, 51, 52]},
+        "revanchita": {"text": "9 18 27 36 45 54"},  # text input also works
+    }
+    r = client.post("/api/draws/grouped", headers=ah, json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draw_number"] == 95500
+    assert len(body["results"]) == 3 and body["errors"] == []
+    games = {res["draw"]["game_type"] for res in body["results"]}
+    assert games == {"melate", "revancha", "revanchita"}
+    # all three share the same concurso number and date
+    for res in body["results"]:
+        assert res["draw"]["draw_number"] == 95500
+        assert res["draw"]["draw_date"] == "2026-06-28"
+    # melate kept its bonus
+    mel = next(res for res in body["results"] if res["draw"]["game_type"] == "melate")
+    assert mel["draw"]["additional"] == 7
+    # duplicate submission surfaces per-game errors, not a hard failure
+    r2 = client.post("/api/draws/grouped", headers=ah, json=payload)
+    assert r2.status_code == 400  # all three already exist
+    # non-admin is forbidden
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    assert client.post("/api/draws/grouped", headers=uh, json=payload).status_code == 403
+
+
 def test_official_draw_evaluates_all_and_analytics(client):
     uh = auth(client, "demo@melateai.pro", "demo1234")
     ah = auth(client, "admin@melateai.pro", "admin1234")

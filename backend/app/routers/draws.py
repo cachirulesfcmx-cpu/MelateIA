@@ -7,7 +7,10 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Draw, User, CsvUpload
-from ..schemas import DrawCreate, DrawTextCreate, DrawCreateResult, DrawOut
+from ..schemas import (
+    DrawCreate, DrawTextCreate, DrawCreateResult, DrawOut,
+    GroupedDrawCreate, GroupedDrawResult,
+)
 from ..auth import get_current_user, get_current_admin
 from ..engine.game_config import get_game, validate_combination, GAME_KEYS, GAMES
 from ..engine.data_engine import parse_csv, parse_number_text, numbers_to_str, str_to_numbers
@@ -139,6 +142,53 @@ def create_draw(payload: DrawCreate, db: Session = Depends(get_db), user: User =
         payload.draw_number, payload.draw_date, payload.additional, "manual",
     )
     return _draw_result(draw, ev)
+
+
+GROUPED_GAMES = ["melate", "revancha", "revanchita"]
+
+
+@router.post("/grouped", response_model=GroupedDrawResult)
+def create_draw_grouped(payload: GroupedDrawCreate, db: Session = Depends(get_db), user: User = Depends(get_current_admin)):
+    """Add Melate + Revancha + Revanchita in one shot — they are the same
+    physical draw, so they share the concurso number and date."""
+    entries = {g: getattr(payload, g) for g in GROUPED_GAMES}
+    # which games actually carry numbers/text
+    provided = {}
+    for g, e in entries.items():
+        if not e:
+            continue
+        if e.numbers:
+            provided[g] = ("numbers", e.numbers, e.additional)
+        elif e.text and e.text.strip():
+            provided[g] = ("text", e.text, e.additional)
+    if not provided:
+        raise HTTPException(status_code=400, detail="Ingresa los resultados de al menos un sorteo")
+
+    # one shared concurso number for the whole event
+    draw_number = payload.draw_number
+    if draw_number is None:
+        draw_number = max(_next_draw_number(db, g) for g in GROUPED_GAMES)
+
+    results, errors = [], []
+    for g in GROUPED_GAMES:
+        if g not in provided:
+            continue
+        kind, raw, additional = provided[g]
+        try:
+            if kind == "text":
+                numbers = parse_number_text(raw)
+            else:
+                numbers = raw
+            draw, ev = _create_draw(db, user, g, numbers, draw_number, payload.draw_date,
+                                    additional if g == "melate" else None, "manual")
+            results.append(_draw_result(draw, ev))
+        except HTTPException as he:
+            errors.append({"game_type": g, "error": he.detail})
+        except ValueError as ve:
+            errors.append({"game_type": g, "error": str(ve)})
+    if not results and errors:
+        raise HTTPException(status_code=400, detail="; ".join(f"{e['game_type']}: {e['error']}" for e in errors))
+    return {"draw_number": draw_number, "results": results, "errors": errors}
 
 
 @router.post("/text", response_model=DrawCreateResult)
