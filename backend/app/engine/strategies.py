@@ -109,7 +109,7 @@ STRATEGIES = {
     },
     "evolutiva": {
         "label": "Evolutiva (Genius)",
-        "desc": "Motor Genius completo: fusiona 13 modelos (Bayes, Markov, Fourier, atraso, co-ocurrencia, delta, gaussiana…) con pesos que evolucionan según su acierto, una capa meta que aprende de los sorteos evaluados, y genera los boletos muestreando de esa distribución.",
+        "desc": "Motor Genius completo: fusiona 15 modelos (Bayes, Markov, Fourier, atraso, co-ocurrencia, delta, gaussiana, arrastre, vecinos…) con pesos que evolucionan según su acierto, una capa meta con memoria de hasta 40 sorteos evaluados, y optimiza los boletos sobre un pool grande de candidatos.",
         "prefer": "balanced",
         "recency_bias": 0.5,
         "anti_popular": True,
