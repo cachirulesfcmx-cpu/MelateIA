@@ -78,6 +78,36 @@ def test_generate_all_strategies(client, strategy):
         assert c["features"]["even"] + c["features"]["odd"] == 6
 
 
+def test_genius_engine_full_power(client):
+    """Evolutiva uses 15 models + pool optimizer; other strategies carry the
+    Genius backbone reinforcement."""
+    from app.engine.ensemble import MODEL_KEYS, m_repeat_carry, m_neighbor
+    from app.engine.game_config import get_game
+    import random as _r
+
+    assert len(MODEL_KEYS) == 15
+    cfg = get_game("melate")
+    rng = _r.Random(7)
+    hist = [sorted(rng.sample(range(1, 57), 6)) for _ in range(120)]
+    for fn in (m_repeat_carry, m_neighbor):
+        p = fn(hist, cfg)
+        assert len(p) == 56 and abs(sum(p.values()) - 1.0) < 1e-6
+
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    r = client.post("/api/predictions/generate", headers=uh, json={"game_type": "melate", "strategy": "evolutiva", "count": 5})
+    assert r.status_code == 200, r.text
+    combos = r.json()["combos"]
+    assert len(combos) == 5
+    assert "15 modelos" in combos[0]["explanation"]
+    assert "optimizado" in combos[0]["explanation"]
+    # pool optimizer returns distinct tickets
+    assert len({tuple(c["numbers"]) for c in combos}) == 5
+    # backbone note on a classic strategy
+    r2 = client.post("/api/predictions/generate", headers=uh, json={"game_type": "melate", "strategy": "conservadora", "count": 2})
+    assert r2.status_code == 200
+    assert "refuerzo del motor Genius (15 modelos)" in r2.json()["combos"][0]["explanation"]
+
+
 def test_tracker_and_stats(client):
     uh = auth(client, "demo@melateai.pro", "demo1234")
     for g in ["melate", "revancha", "melate_retro", "revanchita"]:
@@ -294,11 +324,11 @@ def test_ensemble_probabilities_and_weights(client):
     # normalized distribution (tolerance covers 4-decimal rounding in the response)
     assert abs(sum(n["prob"] for n in j["numbers"]) - 1.0) < 0.01
     w = j["ensemble_weights"]
-    assert len(w) == 13
+    assert len(w) == 15
     assert abs(sum(m["weight"] for m in w) - 1.0) < 0.01  # weights form a distribution
     # analytics surfaces the persisted/lazy ensemble block
     an = client.get("/api/ml/analytics?game_type=melate", headers=uh).json()
-    assert an["ensemble"] is not None and len(an["ensemble"]["models"]) == 13
+    assert an["ensemble"] is not None and len(an["ensemble"]["models"]) == 15
     # positional games have no ensemble
     an_t = client.get("/api/ml/analytics?game_type=tris", headers=uh).json()
     assert an_t["ensemble"] is None

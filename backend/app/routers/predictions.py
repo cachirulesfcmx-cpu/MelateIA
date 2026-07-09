@@ -57,12 +57,12 @@ def generate_predictions(payload: PredictionGenerate, db: Session = Depends(get_
     model = get_model(payload.game_type, cfg.max_number, history)
     scorer = model.make_scorer(history)
 
-    # "Evolutiva" = full Genius engine: fuse the 13 base models with evolved
+    # "Evolutiva" = full Genius engine: fuse the base models with evolved
     # weights, apply the meta-consciousness layer (consensus + error memory +
-    # acceleration), then SAMPLE tickets directly from that distribution — the
-    # way Genius does it, concentrating picks on the favored numbers.
+    # acceleration), then optimize tickets over a large sampled pool.
+    from ..engine import ensemble
+    n_models = len(ensemble.MODEL_KEYS)
     if payload.strategy == "evolutiva":
-        from ..engine import ensemble
         info = ensemble.compute_weights(history, cfg)
         ml_probs = model.probabilities(history)
         fused = ensemble.fused_probabilities(history, cfg, weights=info["weights"], ml_probs=ml_probs)
@@ -80,7 +80,8 @@ def generate_predictions(payload: PredictionGenerate, db: Session = Depends(get_
                 "numbers": t,
                 "score": round(float(sc["total"]), 4),
                 "explanation": (
-                    f"Evolutiva (Genius · 13 modelos + meta{mem} · líder "
+                    f"Evolutiva (Genius · {n_models} modelos + meta{mem} · optimizado "
+                    f"sobre pool de candidatos · líder "
                     f"{ensemble.MODEL_LABELS.get(lead, lead)} {lead_pct}%). "
                     f"Pares/impares {sc['evens']}/{sc['odds']}, suma {sc['sum']}, "
                     f"dispersión {round(sc['spread'], 2)}."
@@ -106,7 +107,11 @@ def generate_predictions(payload: PredictionGenerate, db: Session = Depends(get_
             effective = max(concrete, key=concrete.get) if concrete else "hibrida"
         routed = effective
 
-    combos = generate(stats, effective, payload.count, ml_scorer=scorer)
+    # Genius backbone reinforces every combination strategy (cached per draw count)
+    genius = ensemble.genius_backbone(history, cfg)
+    combos = generate(stats, effective, payload.count, ml_scorer=scorer, genius_probs=genius)
+    for c in combos:
+        c["explanation"] += f" Con refuerzo del motor Genius ({n_models} modelos)."
     if payload.strategy == "adaptativa":
         for c in combos:
             c["strategy"] = "adaptativa"
@@ -114,7 +119,7 @@ def generate_predictions(payload: PredictionGenerate, db: Session = Depends(get_
     return {"game_type": payload.game_type, "strategy": payload.strategy, "combos": combos, "routed_to": routed, "context": ctx}
 
 
-def _recent_evaluated(db: Session, game_type: str, limit: int = 15) -> list[tuple[set, set]]:
+def _recent_evaluated(db: Session, game_type: str, limit: int = 40) -> list[tuple[set, set]]:
     """Last evaluated predictions for a game as (predicted_set, actual_set),
     most recent last — feeds the ensemble meta layer's error memory."""
     rows = (

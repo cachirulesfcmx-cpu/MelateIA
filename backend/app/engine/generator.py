@@ -91,12 +91,23 @@ def generate(
     ml_scorer=None,
     pool_size: int = 1200,
     seed: int | None = None,
+    genius_probs: dict[int, float] | None = None,
+    genius_blend: float = 0.35,
 ) -> list[dict]:
     if seed is not None:
         random.seed(seed)
     cfg = STRATEGIES.get(strategy, STRATEGIES["balanceada"])
     profile = build_profile(strategy, stats)
     weights = biased_weights(strategy, stats)
+    if genius_probs:
+        # Genius backbone: geometric blend of the strategy's own bias with the
+        # fused Genius distribution, so every strategy leans on the engine.
+        tot = sum(weights.values()) or 1.0
+        b = genius_blend
+        weights = {
+            n: ((weights[n] / tot) ** (1 - b)) * (max(genius_probs.get(n, 0.0), 1e-9) ** b)
+            for n in weights
+        }
     temperature = cfg.get("temperature", 1.0)
     pick = stats.pick
 

@@ -354,6 +354,62 @@ def m_pair_lift(history, cfg) -> dict[int, float]:
     return _normalize(probs)
 
 
+def m_repeat_carry(history, cfg) -> dict[int, float]:
+    """Repeat-carry (Genius M14): how often numbers from the previous draw
+    reappear in the next one, measured on THIS game's real history. Last draw's
+    numbers get exactly the measured lift vs pure chance — honest calibration."""
+    maxn = cfg.max_number
+    base = 1.0 / maxn
+    if len(history) < 10:
+        return {n: base for n in _nums(cfg)}
+    repeats = 0
+    slots = 0
+    for t in range(1, len(history)):
+        prev = set(history[t - 1])
+        for x in history[t]:
+            if 1 <= x <= maxn:
+                slots += 1
+                if x in prev:
+                    repeats += 1
+    rate = repeats / max(1, slots)
+    chance = cfg.pick / maxn
+    lift = rate / max(chance, 1e-9)
+    last = set(x for x in history[-1] if 1 <= x <= maxn)
+    probs = {n: base * (lift if n in last else 1.0) for n in _nums(cfg)}
+    return _normalize(probs)
+
+
+def m_neighbor(history, cfg) -> dict[int, float]:
+    """Neighbor drift (Genius M15): numbers adjacent (±1, ±2) to the previous
+    draw, boosted by the adjacency rate measured on the real history."""
+    maxn = cfg.max_number
+    base = 1.0 / maxn
+    if len(history) < 10:
+        return {n: base for n in _nums(cfg)}
+    hit1 = hit2 = slots = 0
+    for t in range(1, len(history)):
+        prev = set(history[t - 1])
+        for x in history[t]:
+            if 1 <= x <= maxn:
+                slots += 1
+                if (x - 1) in prev or (x + 1) in prev:
+                    hit1 += 1
+                elif (x - 2) in prev or (x + 2) in prev:
+                    hit2 += 1
+    r1 = hit1 / max(1, slots)
+    r2 = hit2 / max(1, slots)
+    last = set(x for x in history[-1] if 1 <= x <= maxn)
+    probs = {}
+    for n in _nums(cfg):
+        if (n - 1) in last or (n + 1) in last:
+            probs[n] = base * (1 + 3 * r1)
+        elif (n - 2) in last or (n + 2) in last:
+            probs[n] = base * (1 + 2 * r2)
+        else:
+            probs[n] = base
+    return _normalize(probs)
+
+
 MODELS = {
     "bayes_decay": m_bayes_decay,
     "gap_hazard": m_gap_hazard,
@@ -368,6 +424,8 @@ MODELS = {
     "hot_streak": m_hot_streak,
     "zone_pressure": m_zone_pressure,
     "pair_lift": m_pair_lift,
+    "repeat_carry": m_repeat_carry,
+    "neighbor": m_neighbor,
 }
 MODEL_KEYS = list(MODELS.keys())
 
@@ -385,6 +443,8 @@ MODEL_LABELS = {
     "hot_streak": "Racha caliente",
     "zone_pressure": "Presión por zona",
     "pair_lift": "Pair lift",
+    "repeat_carry": "Arrastre (repite)",
+    "neighbor": "Vecinos (±1/±2)",
 }
 
 
@@ -446,6 +506,16 @@ def compute_weights(history, cfg, force: bool = False) -> dict:
     return out
 
 
+def genius_backbone(history, cfg) -> dict[int, float]:
+    """Fused Genius distribution (no ML blend, no meta) cached per draw count.
+    Used to reinforce EVERY combination strategy's sampling weights, so the
+    whole app runs on the Genius engine, not just the Evolutiva strategy."""
+    info = compute_weights(history, cfg)
+    if info.get("backbone") is None:
+        info["backbone"] = fused_probabilities(history, cfg, weights=info["weights"])
+    return info["backbone"]
+
+
 def fused_probabilities(history, cfg, weights: dict[str, float] | None = None,
                         ml_probs: dict[int, float] | None = None, ml_blend: float = 0.5) -> dict[int, float]:
     """Weighted fusion of the 13 base models, optionally blended with the XGBoost
@@ -469,7 +539,8 @@ def fused_probabilities(history, cfg, weights: dict[str, float] | None = None,
 
 def meta_probabilities(history, cfg, fused: dict[int, float],
                        model_probs: dict[str, dict[int, float]] | None = None,
-                       evaluated: list[tuple[set, set]] | None = None) -> dict[int, float]:
+                       evaluated: list[tuple[set, set]] | None = None,
+                       memory: int = 40) -> dict[int, float]:
     """Genius "meta-consciousness": consensus + error memory + acceleration.
 
     `evaluated` is a list of (predicted_set, actual_set) from recent real
@@ -488,10 +559,10 @@ def meta_probabilities(history, cfg, fused: dict[int, float],
     nmodels = len(model_probs) or 1
     consensus = {n: c / nmodels for n, c in consensus.items()}
 
-    # 2. error memory from last 15 evaluated predictions
+    # 2. error memory from the last `memory` evaluated predictions
     over = {n: 0 for n in range(maxn + 1)}
     under = {n: 0 for n in range(maxn + 1)}
-    recent_checked = (evaluated or [])[-15:]
+    recent_checked = (evaluated or [])[-memory:]
     n15 = len(recent_checked) or 1
     for predicted, actual in recent_checked:
         for n in predicted:
@@ -565,7 +636,22 @@ def _sample_ticket(probs: dict[int, float], cfg: GameConfig, rng: random.Random)
     return sorted(chosen)
 
 
-def score_ticket(t: list[int], probs: dict[int, float], history, cfg) -> dict:
+def _history_ctx(history, cfg) -> tuple[dict, dict, int]:
+    """Precompute per-number frequency and last-seen index once, so scoring a
+    large candidate pool doesn't rescan the whole history per ticket."""
+    maxn = cfg.max_number
+    freq = {n: 0 for n in range(maxn + 1)}
+    last = {n: -1 for n in range(maxn + 1)}
+    for i, r in enumerate(history):
+        for x in r:
+            if 0 <= x <= maxn:
+                freq[x] += 1
+                last[x] = i
+    return freq, last, len(history)
+
+
+def score_ticket(t: list[int], probs: dict[int, float], history, cfg,
+                 ctx: tuple[dict, dict, int] | None = None) -> dict:
     """Genius scoreTicket: 0.45 prob + 0.18 parity + 0.17 spread + 0.20 gap."""
     maxn = cfg.max_number
     pick = len(t) or cfg.pick
@@ -574,14 +660,7 @@ def score_ticket(t: list[int], probs: dict[int, float], history, cfg) -> dict:
     parity = 1 - abs(evens / pick - 0.5) * 2
     decs = {(n - 1) // 10 for n in t}
     spread = len(decs) / math.ceil(maxn / 10)
-    freq = {n: 0 for n in range(maxn + 1)}
-    last = {n: -1 for n in range(maxn + 1)}
-    for i, r in enumerate(history):
-        for x in r:
-            if 0 <= x <= maxn:
-                freq[x] += 1
-                last[x] = i
-    n = len(history)
+    freq, last, n = ctx if ctx is not None else _history_ctx(history, cfg)
     gap = 0.0
     for num in t:
         avg = n / max(freq[num], 1)
@@ -595,22 +674,40 @@ def score_ticket(t: list[int], probs: dict[int, float], history, cfg) -> dict:
 
 
 def generate_genius_tickets(probs: dict[int, float], history, cfg, count: int = 5,
-                            seed: int | None = None) -> list[dict]:
-    """Sample `count` diverse tickets from `probs`, scored & ranked Genius-style."""
+                            seed: int | None = None, pool_factor: int = 40) -> list[dict]:
+    """Pool optimizer: oversample a large candidate pool from `probs`, score
+    EVERY candidate, then greedily keep the `count` best mutually-diverse
+    tickets — instead of settling for the first `count` samples."""
     rng = random.Random(seed)
-    tickets: list[dict] = []
-    used: list[list[int]] = []
+    target_pool = min(400, max(count * pool_factor, 120))
+    pool: dict[tuple, list[int]] = {}
     tries = 0
-    max_tries = count * 50
-    while len(tickets) < count and tries < max_tries:
+    while len(pool) < target_pool and tries < target_pool * 6:
         tries += 1
         t = _sample_ticket(probs, cfg, rng)
-        if any(_jaccard(t, u) > 0.6 for u in used) and tries < max_tries * 0.7:
+        pool[tuple(t)] = t
+    ctx = _history_ctx(history, cfg)
+    scored = [{"ticket": t, "score": score_ticket(t, probs, history, cfg, ctx=ctx)}
+              for t in pool.values()]
+    scored.sort(key=lambda x: x["score"]["total"], reverse=True)
+    tickets: list[dict] = []
+    used: list[list[int]] = []
+    for item in scored:
+        if len(tickets) >= count:
+            break
+        if any(_jaccard(item["ticket"], u) > 0.6 for u in used):
             continue
-        tickets.append({"ticket": t, "score": score_ticket(t, probs, history, cfg)})
-        used.append(t)
+        tickets.append(item)
+        used.append(item["ticket"])
+    if len(tickets) < count:  # diversity too strict → pad with next best
+        chosen = {tuple(x["ticket"]) for x in tickets}
+        for item in scored:
+            if len(tickets) >= count:
+                break
+            if tuple(item["ticket"]) not in chosen:
+                tickets.append(item)
+                chosen.add(tuple(item["ticket"]))
     while len(tickets) < count:
         t = _sample_ticket(probs, cfg, rng)
-        tickets.append({"ticket": t, "score": score_ticket(t, probs, history, cfg)})
-    tickets.sort(key=lambda x: x["score"]["total"], reverse=True)
+        tickets.append({"ticket": t, "score": score_ticket(t, probs, history, cfg, ctx=ctx)})
     return tickets
