@@ -108,6 +108,38 @@ def test_genius_engine_full_power(client):
     assert "refuerzo del motor Genius (15 modelos)" in r2.json()["combos"][0]["explanation"]
 
 
+def test_models_evolve_with_each_added_result(client):
+    """Every added official result must move the whole learning system:
+    ensemble weights recompute over the larger history, the pending prediction
+    gets evaluated, and the meta layer's error memory grows."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+
+    before = client.get("/api/ml/probabilities?game_type=melate&source=ensemble", headers=uh).json()
+    assert len(before["ensemble_weights"]) == 15
+
+    # a pending prediction that the new draw will evaluate
+    sp = client.post("/api/predictions/save", headers=uh, json={"game_type": "melate", "strategy": "evolutiva", "numbers": [3, 9, 21, 27, 44, 50]})
+    assert sp.status_code == 200
+
+    cr = client.post("/api/draws", headers=ah, json={"game_type": "melate", "numbers": [3, 9, 14, 30, 41, 53], "draw_number": 96200})
+    assert cr.status_code == 200, cr.text
+    assert cr.json()["evaluated_predictions"] >= 1  # learning loop fired
+
+    after = client.get("/api/ml/probabilities?game_type=melate&source=ensemble", headers=uh).json()
+    # weights were re-evolved over the larger history
+    assert after["n_draws"] == before["n_draws"] + 1
+    wb = {w["model"]: (w["weight"], w["score"]) for w in before["ensemble_weights"]}
+    wa = {w["model"]: (w["weight"], w["score"]) for w in after["ensemble_weights"]}
+    assert wb != wa
+    # every model was re-scored in the new walk-forward (all 15 present, scores fresh)
+    assert set(wa) == set(wb) and len(wa) == 15
+
+    # error memory now feeds the meta layer
+    g = client.post("/api/predictions/generate", headers=uh, json={"game_type": "melate", "strategy": "evolutiva", "count": 2})
+    assert "memoria de" in g.json()["combos"][0]["explanation"]
+
+
 def test_tracker_and_stats(client):
     uh = auth(client, "demo@melateai.pro", "demo1234")
     for g in ["melate", "revancha", "melate_retro", "revanchita"]:

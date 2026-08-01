@@ -109,6 +109,7 @@ def probabilities(game_type: str, source: str = "ml", db: Session = Depends(get_
         return {
             "game_type": game_type, "max_number": cfg.max_number, "pick": cfg.pick,
             "backend": "ensemble", "source": "ensemble", "trained": True,
+            "n_draws": info["n_draws"],
             "ensemble_weights": weights_out,
             "numbers": [{"number": n, "prob": round(probs[n], 4), "rel": round(probs[n] / mx, 3)} for n in range(1, cfg.max_number + 1)],
             "top": [{"number": n, "prob": round(p, 4), "rel": round(p / mx, 3)} for n, p in ranked[: cfg.pick * 2]],
