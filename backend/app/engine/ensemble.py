@@ -477,7 +477,10 @@ def walk_forward_scores(history, cfg, window: int = WF_WINDOW) -> dict[str, floa
     return {k: hits[k] / max(1, trials) for k in MODELS}
 
 
-def evolve_weights(scores: dict[str, float], temperature: float = 50.0, floor: float = 0.03) -> dict[str, float]:
+def evolve_weights(scores: dict[str, float], temperature: float = 120.0, floor: float = 0.03) -> dict[str, float]:
+    """Softmax over walk-forward scores. temperature=120 (measured best on the
+    real Melate history, 200-draw walk-forward) reacts harder to score gaps, so
+    each new result moves the weights more decisively."""
     if not scores:
         return {}
     mx = max(scores.values())
@@ -674,11 +677,17 @@ def score_ticket(t: list[int], probs: dict[int, float], history, cfg,
 
 
 def generate_genius_tickets(probs: dict[int, float], history, cfg, count: int = 5,
-                            seed: int | None = None, pool_factor: int = 40) -> list[dict]:
+                            seed: int | None = None, pool_factor: int = 40,
+                            sharpness: float = 1.8) -> list[dict]:
     """Pool optimizer: oversample a large candidate pool from `probs`, score
     EVERY candidate, then greedily keep the `count` best mutually-diverse
-    tickets — instead of settling for the first `count` samples."""
+    tickets — instead of settling for the first `count` samples.
+
+    `sharpness` > 1 concentrates sampling on the engine's favorite numbers
+    (probs^alpha, renormalized). 1.8 measured best on the real history."""
     rng = random.Random(seed)
+    if sharpness and sharpness != 1.0:
+        probs = _normalize({n: max(v, 1e-12) ** sharpness for n, v in probs.items()})
     target_pool = min(400, max(count * pool_factor, 120))
     pool: dict[tuple, list[int]] = {}
     tries = 0
