@@ -197,6 +197,10 @@ export default function Profile() {
       </GlassCard>
 
       <div className="space-y-3">
+        <GlassButton full size="lg" onClick={() => nav("/investigacion")}>
+          🔬 Investigación autónoma
+        </GlassButton>
+
         {user?.is_admin && (
           <GlassButton full size="lg" onClick={() => nav("/admin/usuarios")}>
             👥 Usuarios (Administración)

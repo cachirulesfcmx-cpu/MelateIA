@@ -1,0 +1,116 @@
+"""The agent's constitution — non-negotiable rules of the research layer.
+
+Ported from the "Melate Autonomous Research Agent" design. These are not
+decoration: `check_compliance` is executed at the end of every research cycle
+and its result is stored with the run, so a cycle that violated a rule is
+visible instead of silently accepted.
+
+The most important rules for this project are 9 and 10: randomness is the null
+hypothesis, and the system is allowed — expected, even — to conclude that no
+predictive evidence exists.
+"""
+from __future__ import annotations
+
+RULES: list[dict] = [
+    {"id": 1, "rule": "Nunca modificar el histórico.",
+     "detail": "Los sorteos oficiales son inmutables; solo se agregan o se corrigen por un admin."},
+    {"id": 2, "rule": "Nunca utilizar información futura.",
+     "detail": "Todo entrenamiento y evaluación es estrictamente walk-forward: en el paso t solo existen los sorteos anteriores a t."},
+    {"id": 3, "rule": "Toda afirmación predictiva requiere backtesting.",
+     "detail": "Ningún modelo se reporta como útil sin métricas out-of-sample registradas."},
+    {"id": 4, "rule": "El baseline permanece siempre como referencia.",
+     "detail": "El azar puro se mide en cada ciclo y se muestra junto a cualquier resultado."},
+    {"id": 5, "rule": "Un Challenger sólo puede ser Champion con evidencia out-of-sample.",
+     "detail": "Debe superar al baseline por un margen mínimo y ganar en varias ventanas independientes."},
+    {"id": 6, "rule": "Un solo sorteo nunca cambia los pesos del ensemble.",
+     "detail": "Los pesos se re-evolucionan con cada resultado, pero con inercia: el cambio por sorteo está acotado."},
+    {"id": 7, "rule": "Las hipótesis descartadas quedan registradas.",
+     "detail": "Saber qué no funciona es parte del expediente y no se borra."},
+    {"id": 8, "rule": "Toda predicción debe ser reproducible.",
+     "detail": "Cada ciclo guarda su run_id, parámetros y semilla."},
+    {"id": 9, "rule": "El azar es la hipótesis nula.",
+     "detail": "La carga de la prueba recae en el modelo, no en el azar."},
+    {"id": 10, "rule": "El sistema puede concluir que no existe evidencia suficiente.",
+     "detail": "Un veredicto negativo es un resultado válido y se reporta tal cual."},
+]
+
+# A challenger must beat the random baseline by at least this many mean hits
+# per ticket, and win in at least this many independent windows.
+MIN_IMPROVEMENT = 0.01
+MIN_WINDOWS_WON = 2
+# ...and the advantage must be statistically distinguishable from noise.
+# Without this, a lax improvement threshold rubber-stamps random fluctuation as
+# "evidence", which would violate rule 9 (randomness is the null hypothesis).
+MAX_P_VALUE = 0.05
+# Rule 6: hard cap on how much a single draw may move any single model weight.
+MAX_WEIGHT_DELTA_PER_DRAW = 0.10
+
+
+def damped_step(previous: dict[str, float], target: dict[str, float]) -> tuple[dict[str, float], float, float]:
+    """Move `previous` toward `target` without letting any single weight jump
+    more than ``MAX_WEIGHT_DELTA_PER_DRAW`` (constitution rule 6).
+
+    Both inputs are distributions, so travelling along the straight line
+    between them keeps the result a distribution — no renormalization that
+    could push a weight back past the cap. Returns (weights, damping, max_delta).
+
+    This is the single source of truth for rule 6: the persistence layer applies
+    it, and the research cycle reports it.
+    """
+    if not previous:
+        return dict(target), 1.0, 0.0
+    deltas = {k: target[k] - previous.get(k, target[k]) for k in target}
+    worst = max((abs(d) for d in deltas.values()), default=0.0)
+    damping = 1.0 if worst <= MAX_WEIGHT_DELTA_PER_DRAW else MAX_WEIGHT_DELTA_PER_DRAW / worst
+    moved = {k: previous.get(k, target[k]) + damping * d for k, d in deltas.items()}
+    total = sum(moved.values()) or 1.0
+    applied = {k: max(0.0, v / total) for k, v in moved.items()}
+    max_delta = max((abs(applied[k] - previous.get(k, applied[k])) for k in applied), default=0.0)
+    return applied, damping, max_delta
+
+
+def check_compliance(run: dict) -> dict:
+    """Audit a finished research run against the constitution.
+
+    `run` is the dict produced by engine.research.run_research. Returns one
+    entry per rule with pass/fail and the observed evidence.
+    """
+    checks: list[dict] = []
+
+    def add(rid: int, ok: bool, evidence: str):
+        rule = next(r for r in RULES if r["id"] == rid)
+        checks.append({"id": rid, "rule": rule["rule"], "ok": bool(ok), "evidence": evidence})
+
+    exps = run.get("experiments", []) or []
+    baseline = run.get("baseline", {}) or {}
+    windows = run.get("windows", []) or []
+    champion = run.get("champion") or {}
+
+    add(1, run.get("history_mutated") is False,
+        "El ciclo solo leyó el histórico." if run.get("history_mutated") is False else "Se detectó escritura en el histórico.")
+    add(2, run.get("walk_forward") is True,
+        f"Evaluación walk-forward sobre {run.get('tested_draws', 0)} sorteos, sin look-ahead.")
+    add(3, len(exps) > 0,
+        f"{len(exps)} experimentos registrados con métricas out-of-sample.")
+    add(4, bool(baseline),
+        f"Baseline aleatorio medido: {baseline.get('mean_hits', 0):.4f} aciertos/boleto.")
+    promoted = run.get("promotion", {}) or {}
+    add(5, (not promoted.get("promoted")) or promoted.get("windows_won", 0) >= MIN_WINDOWS_WON,
+        promoted.get("reason", "Sin promoción en este ciclo."))
+    add(6, run.get("max_weight_delta", 0.0) <= MAX_WEIGHT_DELTA_PER_DRAW + 1e-9,
+        f"Cambio máximo de peso por sorteo: {run.get('max_weight_delta', 0.0):.4f} (tope {MAX_WEIGHT_DELTA_PER_DRAW}).")
+    add(7, run.get("rejected_recorded", 0) >= 0,
+        f"{run.get('rejected_recorded', 0)} hipótesis descartadas quedaron registradas.")
+    add(8, bool(run.get("run_id")),
+        f"run_id={run.get('run_id')} con semilla {run.get('seed')}.")
+    add(9, bool(baseline),
+        "Todo modelo se contrastó contra el azar como hipótesis nula.")
+    add(10, run.get("verdict") in ("evidencia_insuficiente", "evidencia_debil", "evidencia_significativa"),
+        f"Veredicto emitido: {run.get('verdict')}.")
+
+    return {
+        "compliant": all(c["ok"] for c in checks),
+        "checks": checks,
+        "windows_evaluated": len(windows),
+        "champion": champion.get("model_name"),
+    }

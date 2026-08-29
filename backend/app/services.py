@@ -175,19 +175,42 @@ def retrain_system(game_type: str, db: Session) -> dict:
 
 
 def update_ensemble_weights(db: Session, cfg: GameConfig, history: list[list[int]]) -> dict | None:
-    """Recompute and persist the ensemble's evolved weights for a combination game."""
+    """Recompute and persist the ensemble's evolved weights for a combination game.
+
+    Constitution rule 6 — "un solo sorteo nunca cambia los pesos del ensemble":
+    the weights DO keep evolving with every result, but the movement caused by a
+    single draw is capped (``MAX_WEIGHT_DELTA_PER_DRAW``). Without this an
+    unlucky draw could swing the mix and overfit the engine to one outcome.
+    """
     if cfg.kind == "positional" or len(history) < 40:
         return None
     import json
     from .models import EnsembleWeight
     from .engine import ensemble
+    from .engine.constitution import damped_step
+
     info = ensemble.compute_weights(history, cfg, force=True)
+    raw = dict(info["weights"])
+
     row = db.query(EnsembleWeight).filter(EnsembleWeight.game_type == cfg.key).first()
+    previous: dict[str, float] = {}
+    if row and row.weights:
+        try:
+            previous = json.loads(row.weights)
+        except Exception:
+            previous = {}
+
+    applied, damping, max_delta = damped_step(previous, raw)
+
     if not row:
         row = EnsembleWeight(game_type=cfg.key)
         db.add(row)
-    row.weights = json.dumps(info["weights"])
+    row.weights = json.dumps(applied)
     row.performance = json.dumps(info["scores"])
     row.n_draws = len(history)
     db.commit()
-    return info
+
+    # keep the in-memory cache consistent with what was persisted
+    ensemble.set_weights(cfg, applied, info["scores"], len(history))
+    return {"weights": applied, "scores": info["scores"], "n_draws": len(history),
+            "damping": round(damping, 4), "max_delta": round(max_delta, 4)}

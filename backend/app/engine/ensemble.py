@@ -509,6 +509,17 @@ def compute_weights(history, cfg, force: bool = False) -> dict:
     return out
 
 
+def set_weights(cfg: GameConfig, weights: dict[str, float], scores: dict[str, float],
+                n_draws: int) -> None:
+    """Install externally-governed weights into the cache.
+
+    Used after persisting weights with the constitution's inertia cap applied,
+    so predictions use exactly the governed mix, not the raw recomputation.
+    """
+    _ENS_CACHE[cfg.key] = {"weights": dict(weights), "scores": dict(scores),
+                           "n_draws": n_draws, "backbone": None}
+
+
 def genius_backbone(history, cfg) -> dict[int, float]:
     """Fused Genius distribution (no ML blend, no meta) cached per draw count.
     Used to reinforce EVERY combination strategy's sampling weights, so the

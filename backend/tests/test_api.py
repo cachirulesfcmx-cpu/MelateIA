@@ -373,3 +373,140 @@ def test_existing_games_untouched(client):
                     json={"game_type": "melate", "numbers": [6, 5, 4, 3, 2, 1]})
     assert r.status_code == 200 and r.json()["numbers"] == [1, 2, 3, 4, 5, 6]  # sorted
     assert client.post("/api/draws", headers=ah, json={"game_type": "melate", "numbers": [1, 1, 3, 4, 5, 6], "draw_number": 95900}).status_code == 400
+
+
+def test_constitution_endpoint(client):
+    """The 10 governance rules are served with their promotion thresholds."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    c = client.get("/api/research/constitution", headers=uh)
+    assert c.status_code == 200
+    body = c.json()
+    assert len(body["rules"]) == 10
+    ids = [r["id"] for r in body["rules"]]
+    assert ids == list(range(1, 11))
+    # rule 10 — the system is allowed to conclude there is no evidence
+    assert "no existe evidencia" in body["rules"][9]["rule"].lower()
+    th = body["thresholds"]
+    assert th["minimum_windows_won"] >= 2 and th["max_weight_delta_per_draw"] > 0
+
+
+def test_research_agents_do_real_work(client):
+    """Agents must compute over the real history, not return canned dicts."""
+    from app.engine.agents import (DataAgent, RiskAgent, StatisticianAgent,
+                                   BacktestAgent, paired_significance)
+    from app.engine.game_config import get_game
+    import random as _r
+
+    cfg = get_game("melate")
+    rng = _r.Random(3)
+    hist = [sorted(rng.sample(range(1, 57), 6)) for _ in range(300)]
+
+    data = DataAgent()
+    assert data.validate_draw([1, 2, 3, 4, 5, 6], cfg)
+    assert not data.validate_draw([1, 1, 3, 4, 5, 6], cfg)      # repeated
+    assert not data.validate_draw([1, 2, 3, 4, 5, 57], cfg)     # out of range
+    audit = data.audit([{"numbers": h, "draw_number": i} for i, h in enumerate(hist)], cfg)
+    assert audit["ok"] and audit["total"] == 300 and audit["invalid_count"] == 0
+
+    # a uniform random history must NOT be flagged as non-uniform
+    stats = StatisticianAgent().analyze(hist, cfg)
+    assert stats["uniformity"]["uniform"] is True
+    assert stats["uniformity"]["p_value"] > 0.05
+
+    # risk agent rejects calendar-only, long-run, invalid and duplicate tickets
+    checked = RiskAgent().validate([
+        [30, 31, 32, 33, 45, 52],   # run of 4 (not calendar-only)
+        [2, 5, 9, 14, 20, 31],      # all <= 31: birthdays ticket
+        [7, 19, 23, 34, 41, 55],    # good
+        [7, 19, 23, 34, 41, 55],    # duplicate of the good one
+        [7, 19, 23, 34, 41, 99],    # out of range
+    ], cfg)
+    assert checked["accepted"] == [[7, 19, 23, 34, 41, 55]]
+    assert checked["rejected"]["secuencia_larga"] == 1
+    assert checked["rejected"]["solo_calendario"] == 1
+    assert checked["rejected"]["duplicado"] == 1
+    assert checked["rejected"]["invalido"] == 1
+
+    # identical performance to the baseline is never "significant"
+    sig = paired_significance([1] * 40, [1] * 40)
+    assert sig["significant"] is False
+    # noise must not be accepted, no matter the raw edge
+    ok, reason = BacktestAgent().accepts({"mean_hits": 0.9}, {"mean_hits": 0.6}, 3,
+                                         {"p_value": 0.4})
+    assert ok is False and "ruido" in reason
+
+
+def test_research_cycle_runs_and_is_honest(client):
+    """Full cycle: walk-forward vs the random baseline, verdict, and record."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+
+    # only an admin may launch it
+    assert client.post("/api/research/run?game_type=melate", headers=uh).status_code == 403
+    # positional games are out of scope
+    assert client.post("/api/research/run?game_type=tris", headers=ah).status_code == 400
+
+    r = client.post("/api/research/run?game_type=melate&windows=2&window_size=12", headers=ah)
+    assert r.status_code == 200, r.text
+    run = r.json()
+    assert run["status"] == "ok"
+    assert run["walk_forward"] is True and run["history_mutated"] is False
+    assert run["verdict"] in ("evidencia_significativa", "evidencia_debil", "evidencia_insuficiente")
+    # the random baseline is always measured and reported (rule 4)
+    assert run["baseline"]["mean_hits"] >= 0 and "expected_random" in run["baseline"]
+    # every arm carries out-of-sample metrics and a significance test (rules 3, 9)
+    assert len(run["experiments"]) == 16   # 15 models + fused ensemble
+    for arm in run["experiments"]:
+        assert "p_value" in arm["significance"]
+        assert arm["metrics"]["n"] > 0
+    # accepted arms are ranked first
+    accepted_flags = [a["accepted"] for a in run["experiments"]]
+    assert accepted_flags == sorted(accepted_flags, reverse=True)
+    # the run audits itself against the constitution
+    assert run["constitution"]["compliant"] is True
+    assert len(run["constitution"]["checks"]) == 10
+
+    # the record is queryable, and rejected hypotheses are kept (rule 7)
+    hyps = client.get("/api/research/hypotheses?game_type=melate", headers=uh).json()
+    assert len(hyps) > 0
+    assert any(h["status"] == "descartada" for h in hyps)
+    exps = client.get(f"/api/research/experiments?run_id={run['run_id']}", headers=uh).json()
+    assert any(e["model_name"] == "random_baseline" for e in exps)  # baseline recorded
+
+    ch = client.get("/api/research/champion?game_type=melate", headers=uh)
+    assert ch.status_code == 200
+    body = ch.json()
+    # no champion without significant evidence — and that is stated plainly
+    if body["champion"] is None:
+        assert body["note"] and "azar" in body["note"]
+
+
+def test_weight_inertia_rule_six(client):
+    """Rule 6: weights keep evolving, but one draw cannot swing them freely."""
+    import json
+    from app.database import SessionLocal
+    from app.models import EnsembleWeight
+    from app.engine.constitution import MAX_WEIGHT_DELTA_PER_DRAW
+    from app.engine.game_config import get_game
+    from app.services import update_ensemble_weights, load_draw_rows
+
+    db = SessionLocal()
+    try:
+        cfg = get_game("melate")
+        history = [r["numbers"] for r in load_draw_rows(db, "melate")]
+        first = update_ensemble_weights(db, cfg, history)
+        assert first is not None
+        before = json.loads(db.query(EnsembleWeight)
+                            .filter(EnsembleWeight.game_type == "melate").first().weights)
+        # a wildly different history would push the raw weights hard...
+        shifted = history[:-40]
+        second = update_ensemble_weights(db, cfg, shifted)
+        after = json.loads(db.query(EnsembleWeight)
+                           .filter(EnsembleWeight.game_type == "melate").first().weights)
+        # ...but no single model may move more than the cap
+        moved = max(abs(after.get(k, 0.0) - before.get(k, 0.0)) for k in set(after) | set(before))
+        assert moved <= MAX_WEIGHT_DELTA_PER_DRAW + 1e-6, f"peso movió {moved}"
+        assert abs(sum(after.values()) - 1.0) < 1e-6      # still a distribution
+        assert second["n_draws"] == len(shifted)          # and it DID evolve
+    finally:
+        db.close()
