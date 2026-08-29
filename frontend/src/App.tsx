@@ -15,6 +15,7 @@ import Analytics from "./pages/Analytics";
 import AssistantChat from "./pages/AssistantChat";
 import Builder from "./pages/Builder";
 import Legal from "./pages/Legal";
+import Research from "./pages/Research";
 import ResetPassword from "./pages/ResetPassword";
 
 function Protected({ children }: { children: JSX.Element }) {
@@ -46,6 +47,7 @@ export default function App() {
       <Route path="/rendimiento" element={<Protected><Analytics /></Protected>} />
       <Route path="/asistente" element={<Protected><AssistantChat /></Protected>} />
       <Route path="/constructor" element={<Protected><Builder /></Protected>} />
+      <Route path="/investigacion" element={<Protected><Research /></Protected>} />
       <Route path="/responsable" element={<Protected><Legal /></Protected>} />
       <Route path="/perfil" element={<Protected><Profile /></Protected>} />
       <Route path="/admin/usuarios" element={<Protected><AdminUsers /></Protected>} />

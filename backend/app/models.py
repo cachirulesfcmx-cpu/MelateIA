@@ -154,6 +154,64 @@ class EnsembleWeight(Base):
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class Experiment(Base):
+    """A recorded walk-forward experiment (autonomous research layer).
+
+    Every research cycle registers one row per evaluated model with its
+    out-of-sample metrics, so any predictive claim is auditable and
+    reproducible (constitution rules 3 and 8).
+    """
+    __tablename__ = "experiments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    game_type = Column(String, index=True, nullable=False)
+    hypothesis = Column(Text, default="")
+    model_name = Column(String, nullable=False)
+    params = Column(Text, default="{}")     # JSON
+    metrics = Column(Text, default="{}")    # JSON: mean_hits, hit_rate_3plus, ...
+    status = Column(String, default="candidate")  # baseline | candidate | champion | rejected
+    run_id = Column(String, index=True, default="")
+    created_at = Column(DateTime, default=utcnow)
+
+
+class Hypothesis(Base):
+    """A research hypothesis and its verdict.
+
+    Rejected hypotheses are kept on purpose (constitution rule 7): knowing what
+    does NOT work is part of the record.
+    """
+    __tablename__ = "hypotheses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    game_type = Column(String, index=True, nullable=False)
+    statement = Column(Text, nullable=False)
+    status = Column(String, default="pendiente")  # pendiente | confirmada | descartada
+    evidence = Column(Text, default="{}")         # JSON
+    run_id = Column(String, index=True, default="")
+    created_at = Column(DateTime, default=utcnow)
+
+
+class ModelVersion(Base):
+    """Champion/Challenger registry.
+
+    A challenger is only promoted to champion with out-of-sample evidence over
+    multiple windows and a minimum improvement (constitution rule 5).
+    """
+    __tablename__ = "model_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    game_type = Column(String, index=True, nullable=False)
+    model_name = Column(String, nullable=False)
+    version = Column(String, nullable=False)
+    role = Column(String, default="challenger")  # champion | challenger | retired
+    score = Column(Float, default=0.0)           # mean hits out-of-sample
+    baseline_score = Column(Float, default=0.0)  # random baseline it was measured against
+    windows = Column(Integer, default=0)         # how many windows it won
+    metrics = Column(Text, default="{}")         # JSON
+    active = Column(Boolean, default=True)
+    promoted_at = Column(DateTime, default=utcnow)
+
+
 class StrategyContextPerf(Base):
     """Per-context (regime) reinforcement weights for the contextual bandit."""
     __tablename__ = "strategy_context_perf"
