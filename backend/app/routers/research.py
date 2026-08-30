@@ -5,6 +5,7 @@ serves the resulting record: experiments, hypotheses (including the rejected
 ones) and the champion/challenger registry.
 """
 import json
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -22,6 +23,8 @@ from ..engine.research_lab import ALPHA, MIN_IMPROVEMENT_V3, PRE_REGISTERED
 from ..engine.labs import ClassicalMLLab, DeepLearningLab, QuantumLab
 from ..engine import confirmation
 from ..engine.confirmation import REQUIRED_CONFIRMATIONS
+from ..engine.autonomous_cycle import (AutonomousResearchCycle, generate_hypotheses,
+                                       replication_gate)
 from ..services import load_draw_rows
 
 router = APIRouter(prefix="/api/research", tags=["research"])
@@ -136,6 +139,38 @@ def architecture():
     }
 
 
+@router.get("/cycle-plan")
+def cycle_plan(game_type: str, db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    """What the autonomous cycle would do right now — including doing nothing.
+
+    With no new official draw there is no new evidence, so re-running would only
+    multiply tests against the same data. The honest decision is WAIT.
+    """
+    if game_type not in GAME_KEYS:
+        raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
+    current = len(load_draw_rows(db, game_type))
+    last = (db.query(Experiment)
+            .filter(Experiment.game_type == game_type,
+                    Experiment.model_name == "random_baseline")
+            .order_by(Experiment.created_at.desc(), Experiment.id.desc())
+            .first())
+    last_draws = None
+    if last:
+        last_draws = _loads(last.params).get("draws_at_run")
+    plan = AutonomousResearchCycle().plan(
+        game_type, last_run_draws=last_draws, current_draws=current)
+    recorded = [h.statement for h in
+                db.query(Hypothesis).filter(Hypothesis.game_type == game_type).all()]
+    return {
+        **plan,
+        "draws_now": current,
+        "draws_at_last_run": last_draws,
+        "open_hypotheses": generate_hypotheses(recorded),
+        "replication_requirements": replication_gate(1.0, 1.0, 0.0, 1.0)["requires"],
+    }
+
+
 @router.get("/queue")
 def queue(game_type: str | None = None, db: Session = Depends(get_db),
           user: User = Depends(get_current_user)):
@@ -145,6 +180,80 @@ def queue(game_type: str | None = None, db: Session = Depends(get_db),
         "items": confirmation.listing(db, game_type),
         "note": ("Un modelo que pasa todas las compuertas no se promueve de inmediato: "
                  "debe repetir el resultado en corridas independientes."),
+    }
+
+
+@router.post("/worker-result")
+def worker_result(payload: dict, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_admin)):
+    """Register a Training Worker run as a CHALLENGER (never a Champion).
+
+    The worker trains LSTM/Transformer/QNN outside HTTP and posts the result
+    here. Promotion stays blocked: a training loss — or even an edge on one
+    validation slice — is not evidence. It must still clear walk-forward,
+    permutation, block bootstrap, multiple-testing correction, the Golden
+    Holdout and independent replication.
+    """
+    game_type = str(payload.get("game") or payload.get("game_type") or "")
+    model = str(payload.get("model") or "")
+    if game_type not in GAME_KEYS:
+        raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
+    if model not in ("lstm", "transformer", "qnn"):
+        raise HTTPException(status_code=400, detail="Modelo de worker inválido")
+    status = str(payload.get("status") or "unknown")
+
+    version = f"worker-{model}-{uuid.uuid4().hex[:8]}"
+    row = ModelVersion(
+        game_type=game_type, model_name=f"worker_{model}", version=version,
+        role="challenger",                       # never "champion"
+        score=float(payload.get("validation_mean_hits") or 0.0),
+        baseline_score=float(payload.get("random_mean_hits") or 0.0),
+        windows=0,
+        metrics=json.dumps(payload, default=str),
+        active=status == "trained",
+    )
+    db.add(row)
+    db.add(Experiment(
+        game_type=game_type,
+        hypothesis=f"El challenger {model} del worker aporta ventaja sobre el azar",
+        model_name=f"worker_{model}",
+        params=json.dumps({"source": "training_worker",
+                           "epochs": payload.get("epochs"),
+                           "lookback": payload.get("lookback")}, default=str),
+        metrics=json.dumps(payload, default=str),
+        status="challenger",
+        run_id=version,
+    ))
+    db.commit()
+    return {
+        "registered": True,
+        "version": version,
+        "role": "challenger",
+        "promotion": "blocked_until_protocol_pass",
+        "note": ("Registrado como challenger. La pérdida de entrenamiento y una ventaja "
+                 "en una sola partición de validación no promueven nada: hace falta el "
+                 "protocolo completo y replicación independiente."),
+    }
+
+
+@router.get("/worker-challengers")
+def worker_challengers(game_type: str | None = None, limit: int = 20,
+                       db: Session = Depends(get_db),
+                       user: User = Depends(get_current_user)):
+    """Challengers published by the Training Worker."""
+    q = db.query(ModelVersion).filter(ModelVersion.model_name.like("worker_%"))
+    if game_type:
+        q = q.filter(ModelVersion.game_type == game_type)
+    rows = q.order_by(ModelVersion.promoted_at.desc(), ModelVersion.id.desc()).limit(limit).all()
+    return {
+        "items": [{
+            "game_type": r.game_type, "model_name": r.model_name, "version": r.version,
+            "role": r.role, "score": r.score, "baseline_score": r.baseline_score,
+            "edge_vs_random": round((r.score or 0) - (r.baseline_score or 0), 4),
+            "metrics": _loads(r.metrics), "created_at": r.promoted_at,
+        } for r in rows],
+        "note": ("Ningún resultado del worker puede ser Champion por sí solo; "
+                 "la promoción exige el protocolo completo."),
     }
 
 
