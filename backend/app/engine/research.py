@@ -26,6 +26,7 @@ from heapq import nlargest
 from sqlalchemy.orm import Session
 
 from . import ensemble
+from . import research_lab as rlab
 from .agents import (BacktestAgent, DataAgent, MasterAgent, MLResearcher,
                      OptimizerAgent, RiskAgent, StatisticianAgent,
                      paired_significance)
@@ -36,6 +37,11 @@ from .game_config import GameConfig
 DEFAULT_WINDOWS = 3
 DEFAULT_WINDOW_SIZE = 40
 MIN_TRAIN = 120
+# Temporal permutation testing (protocol v3, point 5). Kept modest by default:
+# each permutation re-runs a walk-forward, so cost is permutations x perm_window
+# model fits per tested arm.
+DEFAULT_PERMUTATIONS = 30
+DEFAULT_PERM_WINDOW = 25
 
 
 def _ticket(scores: dict[int, float], cfg: GameConfig) -> list[int]:
@@ -78,7 +84,9 @@ def _hits(ticket: list[int], actual: list[int], cfg: GameConfig) -> int:
 
 def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
                  windows: int = DEFAULT_WINDOWS, window_size: int = DEFAULT_WINDOW_SIZE,
-                 seed: int = 42, persist: bool = True) -> dict:
+                 seed: int = 42, persist: bool = True,
+                 permutations: int = DEFAULT_PERMUTATIONS,
+                 perm_window: int = DEFAULT_PERM_WINDOW) -> dict:
     """Execute one full research cycle. Read-only over the history."""
     from ..models import Experiment, Hypothesis, ModelVersion
 
@@ -88,22 +96,47 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
     data_agent, stat_agent = DataAgent(), StatisticianAgent()
     backtester, risk, optimizer = BacktestAgent(), RiskAgent(), OptimizerAgent()
 
-    n = len(history)
+    n_total = len(history)
+
+    # PROTOCOL v3, point 7 — the final 10% is locked away BEFORE anything else
+    # happens. Every selection decision below sees `selection` only.
+    split = rlab.chronological_split(history)
+    selection = split.selection
+    golden = split.golden_holdout
+    n = len(selection)
+
     bounds = _window_bounds(n, windows, window_size)
     if not bounds:
         return {
             "run_id": run_id, "game_type": cfg.key, "status": "insufficient_data",
-            "draws": n,
-            "minimum_required": MIN_TRAIN + window_size,
-            "message": (f"Se requieren al menos {MIN_TRAIN + window_size} sorteos para "
-                        f"una evaluación out-of-sample; hay {n}."),
+            "draws": n_total, "selection_draws": n,
+            "minimum_required": int((MIN_TRAIN + window_size) / 0.9) + 1,
+            "message": (f"Tras reservar el Golden Holdout (10%) quedan {n} sorteos para "
+                        f"selección; se requieren al menos {MIN_TRAIN + window_size}."),
         }
 
     # 1. validate_data (over the raw rows we were given)
     audit = data_agent.audit([{"numbers": h, "draw_number": i} for i, h in enumerate(history)], cfg)
 
-    # 2. run_statistics — includes the null-hypothesis test
-    stats = stat_agent.analyze(history, cfg)
+    # 2. run_statistics — includes the null-hypothesis test (selection only)
+    stats = stat_agent.analyze(selection, cfg)
+
+    # 2b. PROTOCOL v3, point 4 — diagnostics: why no signal appears
+    diagnostics = rlab.run_diagnostics(selection, cfg.max_number)
+
+    # 2c. PROTOCOL v3, point 6 — hypotheses are registered BEFORE any test is
+    # run, so the record cannot be rewritten to match whatever came out.
+    prereg_ids: dict[str, int] = {}
+    if persist:
+        for code, statement in rlab.PRE_REGISTERED.items():
+            row = Hypothesis(game_type=cfg.key, statement=f"[{code}] {statement}",
+                             status="pendiente",
+                             evidence=json.dumps({"pre_registered": True, "code": code}),
+                             run_id=run_id)
+            db.add(row)
+            db.flush()
+            prereg_ids[code] = row.id
+        db.commit()
 
     # 3. run_walk_forward — every arm, every window, strictly no look-ahead
     arms: dict[str, dict] = {}          # arm -> {window_index: metrics}
@@ -115,7 +148,7 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
 
     for wi, (start, end) in enumerate(bounds):
         # ensemble weights frozen with data available BEFORE the window
-        pre = history[:start]
+        pre = selection[:start]
         try:
             w_info = ensemble.compute_weights(pre, cfg, force=True)
             frozen_weights = w_info["weights"]
@@ -128,7 +161,7 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
         rng = random.Random(seed + wi)
 
         for t in range(start, end):
-            train, actual = history[:t], history[t]
+            train, actual = selection[:t], selection[t]
             probs_by_model = ensemble.all_model_probabilities(train, cfg)
             for k, probs in probs_by_model.items():
                 model_hits[k].append(_hits(_ticket(probs, cfg), actual, cfg))
@@ -162,8 +195,29 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
             "max_hits": max((m["max_hits"] for m in per_window.values()), default=0),
         }
 
-    baseline = _aggregate(per_window_baseline)
-    baseline["expected_random"] = round(cfg.pick * cfg.pick / (cfg.max_number - cfg.min_number + 1), 4)
+    # PROTOCOL v3, point 3 — the baselines are kept STRICTLY separate and are
+    # never mixed into one number.
+    tested = sum(m["n"] for m in per_window_baseline.values())
+    theoretical = rlab.theoretical_random_mean_hits(cfg.max_number, cfg.pick)
+    exact_random = rlab.empirical_random_baseline(tested, cfg.max_number, cfg.pick)
+    simulated = _aggregate(per_window_baseline)   # one Monte Carlo realisation
+
+    baselines_block = {
+        "teorico": {"mean_hits": round(theoretical, 6),
+                    "formula": f"{cfg.pick}×{cfg.pick}/{cfg.max_number}"},
+        "empirico_exacto": exact_random,
+        "simulado_montecarlo": simulated,
+        "de_modelo": {},   # filled in after the arms are aggregated
+        "nota": ("El baseline usado para juzgar a los modelos es el empírico exacto "
+                 "(hipergeométrico). El simulado es una sola realización y su ruido "
+                 "no debe confundirse con el valor esperado."),
+    }
+
+    # The reference every arm is judged against is the EXACT distribution, not
+    # one lucky/unlucky Monte Carlo run.
+    baseline = {**simulated, "mean_hits": exact_random["mean_hits"],
+                "expected_random": round(theoretical, 4),
+                "source": "hipergeométrica exacta"}
 
     # 4. compare_challengers
     results = []
@@ -172,7 +226,6 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
         won = sum(1 for wi, m in per_window.items()
                   if m["mean_hits"] > per_window_baseline[wi]["mean_hits"])
         sig = paired_significance(arm_hits_all.get(arm, []), baseline_hits_all)
-        accepted, reason = backtester.accepts(agg, baseline, won, sig)
         results.append({
             "model_name": arm,
             "label": ("Ensamble Genius (fusionado)" if arm == "ensemble_genius"
@@ -182,35 +235,146 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
             "windows_won": won,
             "edge_vs_random": round(agg["mean_hits"] - baseline["mean_hits"], 4),
             "significance": sig,
-            "accepted": accepted,
-            "reason": reason,
         })
+
+    # PROTOCOL v3, point 6 — Benjamini-Hochberg over the WHOLE family of tests.
+    # Testing 16 arms at once and reading raw p-values would manufacture a
+    # "winner" by chance alone; the corrected q-value is what decides.
+    corrected = rlab.benjamini_hochberg([r["significance"]["p_value"] for r in results])
+    for r, c in zip(results, corrected):
+        r["q_value"] = c["q"]
+        r["significant_corrected"] = c["significant"]
+        accepted, reason = backtester.accepts(
+            r["metrics"], baseline, r["windows_won"],
+            {**r["significance"], "q_value": c["q"]})
+        r["accepted"] = accepted
+        r["reason"] = reason
+
+    # model baselines (point 3): simple references, reported apart from the rest
+    for key, name in (("frequency", "frecuencia"), ("bayes_decay", "recencia")):
+        row = next((r for r in results if r["model_name"] == key), None)
+        if row:
+            baselines_block["de_modelo"][name] = {
+                "mean_hits": row["metrics"]["mean_hits"],
+                "edge_vs_random": row["edge_vs_random"],
+                "q_value": row["q_value"],
+            }
+
     # accepted arms first, then by edge: the champion must come from the arms
     # that actually passed the acceptance rules, not merely the luckiest one.
     results.sort(key=lambda r: (r["accepted"], r["edge_vs_random"]), reverse=True)
     best = results[0] if results else None
+
+    # PROTOCOL v3, point 5 — temporal permutation test. Does the ORDER of the
+    # draws carry information at all? Run on the two model baselines (as the
+    # source protocol does) plus the best arm.
+    permutation_block: dict = {}
+    if permutations > 0:
+        perm_targets = []
+        for key in ("frequency", "bayes_decay"):
+            if key in ensemble.MODELS:
+                perm_targets.append(key)
+        if best and best["model_name"] in ensemble.MODELS and best["model_name"] not in perm_targets:
+            perm_targets.append(best["model_name"])
+        perm_start, perm_end = bounds[-1]
+        perm_steps = min(perm_window, perm_end - perm_start)
+        for key in perm_targets:
+            fn = ensemble.MODELS[key]
+
+            def _mean_hits(seq, _fn=fn):
+                hits = []
+                stop = len(seq)
+                for t in range(stop - perm_steps, stop):
+                    if t < MIN_TRAIN:
+                        continue
+                    hits.append(_hits(_ticket(_fn(seq[:t], cfg), cfg), seq[t], cfg))
+                return sum(hits) / len(hits) if hits else 0.0
+
+            try:
+                permutation_block[key] = {
+                    "label": ensemble.MODEL_LABELS.get(key, key),
+                    **rlab.temporal_permutation_test(
+                        selection[:perm_end], _mean_hits,
+                        n_permutations=permutations, seed=seed),
+                }
+            except Exception as exc:  # never break the cycle on a slow arm
+                permutation_block[key] = {"error": str(exc)}
+        if permutation_block:
+            keys = [k for k, v in permutation_block.items() if "p_value" in v]
+            corr = rlab.benjamini_hochberg([permutation_block[k]["p_value"] for k in keys])
+            for k, c in zip(keys, corr):
+                permutation_block[k]["q_value"] = c["q"]
+                permutation_block[k]["significant_corrected"] = c["significant"]
+
+    # 4b. PROTOCOL v3, point 7 — the Golden Holdout is touched ONLY here, and
+    # only by a candidate that already passed every corrected criterion.
+    golden_block = rlab.golden_holdout_block(split)
+    golden_eval = None
+    if best and best["accepted"] and best["model_name"] in ensemble.MODELS and golden:
+        fn = ensemble.MODELS[best["model_name"]]
+        hits = []
+        base_g = []
+        rng_g = random.Random(seed + 999)
+        pool = list(range(cfg.min_number, cfg.max_number + 1))
+        for i, actual in enumerate(golden):
+            train = selection + golden[:i]     # everything strictly before it
+            hits.append(_hits(_ticket(fn(train, cfg), cfg), actual, cfg))
+            base_g.append(_hits(sorted(rng_g.sample(pool, cfg.pick)), actual, cfg))
+        g_metrics = _summarize(hits, cfg)
+        g_exact = rlab.empirical_random_baseline(len(hits), cfg.max_number, cfg.pick)
+        g_sig = paired_significance(hits, base_g)
+        passed = (g_metrics["mean_hits"] - g_exact["mean_hits"]) >= rlab.MIN_IMPROVEMENT_V3
+        golden_eval = {
+            "model_name": best["model_name"], "label": best["label"],
+            "metrics": g_metrics, "exact_random": g_exact["mean_hits"],
+            "edge_vs_random": round(g_metrics["mean_hits"] - g_exact["mean_hits"], 4),
+            "significance": g_sig, "passed": passed,
+            "note": ("El candidato se evaluó una sola vez sobre el 10% bloqueado."
+                     if passed else
+                     "El candidato NO sobrevivió al Golden Holdout: la ventaja no se sostuvo "
+                     "fuera de los datos de selección."),
+        }
+        golden_block["evaluated"] = True
+        golden_block["evaluation"] = golden_eval
+        if not passed:
+            best["accepted"] = False
+            best["reason"] = "Ventaja no confirmada en el Golden Holdout."
 
     # verdict — the system is allowed to say "no evidence" (rule 10)
     if best and best["accepted"]:
         verdict = "evidencia_significativa"
         verdict_text = (f"{best['label']} superó al azar por {best['edge_vs_random']:+.4f} "
                         f"aciertos/boleto en {best['windows_won']} ventanas independientes "
-                        f"(p={best['significance']['p_value']:.3f}).")
+                        f"(q={best['q_value']:.3f} corregido"
+                        + (", confirmado en el Golden Holdout" if golden_eval else "") + ").")
     elif best and best["edge_vs_random"] > 0:
         verdict = "evidencia_debil"
         verdict_text = (f"El mejor arma ({best['label']}) queda {best['edge_vs_random']:+.4f} "
-                        f"sobre el azar, pero no es distinguible del ruido "
-                        f"(p={best['significance']['p_value']:.3f}). No alcanza el umbral "
-                        f"de promoción: se mantiene el campeón actual.")
+                        f"sobre el azar exacto, pero tras corregir por pruebas múltiples "
+                        f"no es distinguible del ruido (p={best['significance']['p_value']:.3f}, "
+                        f"q={best['q_value']:.3f}). No se promueve.")
     else:
         verdict = "evidencia_insuficiente"
         verdict_text = ("Ningún modelo supera al azar en esta evaluación. "
                         "El resultado honesto es que no hay evidencia predictiva.")
 
-    # 5. champion / challenger
-    promotion = {"promoted": False, "reason": verdict_text,
-                 "windows_won": best["windows_won"] if best else 0}
+    # 5. champion / challenger — the v3 policy decides on the CORRECTED q-value
+    # and on Golden Holdout survival, never on a raw p-value.
+    policy = rlab.promotion_decision({
+        "improvement_vs_random": best["edge_vs_random"] if best else 0.0,
+        "q_value": best.get("q_value", 1.0) if best else 1.0,
+        "out_of_sample": True,
+        "windows_won": best["windows_won"] if best else 0,
+        "min_windows": 2,
+        "golden_holdout_passed": (golden_eval or {}).get("passed", True),
+    })
+    promotion = {"promoted": False,
+                 "reason": policy["reason"] if not best or not best["accepted"] else verdict_text,
+                 "windows_won": best["windows_won"] if best else 0,
+                 "policy": policy}
     champion_row = None
+    if best and not policy["promote"]:
+        best["accepted"] = False
     if persist:
         champion_row = (db.query(ModelVersion)
                         .filter(ModelVersion.game_type == cfg.key,
@@ -237,6 +401,47 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
             else:
                 promotion["reason"] = ("El challenger cumple el umbral pero no supera al "
                                        "campeón vigente; no se promueve.")
+
+    # 5b. Resolve the PRE-REGISTERED hypotheses against the evidence actually
+    # measured. Each one has a concrete, stated criterion — decided after the
+    # tests ran, but written down before them.
+    by_arm = {r["model_name"]: r for r in results}
+    ens = by_arm.get("ensemble_genius", {})
+    perm_h07 = any(v.get("significant_corrected") for v in permutation_block.values()
+                   if isinstance(v, dict))
+    prereg_results = {
+        "H01": (bool(by_arm.get("bayes_decay", {}).get("accepted")),
+                {"arm": "bayes_decay", "edge": by_arm.get("bayes_decay", {}).get("edge_vs_random"),
+                 "q": by_arm.get("bayes_decay", {}).get("q_value")}),
+        "H02": (bool(by_arm.get("frequency", {}).get("accepted")),
+                {"arm": "frequency", "edge": by_arm.get("frequency", {}).get("edge_vs_random"),
+                 "q": by_arm.get("frequency", {}).get("q_value")}),
+        "H03": (bool(diagnostics.get("autocorrelation_above_noise")),
+                {"strongest_lag": diagnostics.get("strongest_lag"),
+                 "value": diagnostics.get("strongest_autocorrelation"),
+                 "noise_threshold": diagnostics.get("noise_threshold")}),
+        "H04": (bool(diagnostics.get("top_pair_significance", {}).get("significant")),
+                diagnostics.get("top_pair_significance", {})),
+        "H05": (bool(diagnostics.get("regime_shift_above_noise")),
+                diagnostics.get("rolling_shift_100", {})),
+        "H06": (bool(ens.get("accepted")),
+                {"arm": "ensemble_genius", "edge": ens.get("edge_vs_random"),
+                 "q": ens.get("q_value"),
+                 "vs_model_baselines": baselines_block.get("de_modelo")}),
+        "H07": (perm_h07, {"permutation_tests": permutation_block}),
+    }
+    if persist:
+        for code, (confirmed, evidence) in prereg_results.items():
+            hid = prereg_ids.get(code)
+            if not hid:
+                continue
+            row = db.query(Hypothesis).filter(Hypothesis.id == hid).first()
+            if row:
+                row.status = "confirmada" if confirmed else "descartada"
+                row.evidence = json.dumps({"pre_registered": True, "code": code,
+                                           "confirmed": confirmed, **(evidence or {})},
+                                          default=str)
+        db.commit()
 
     # 6. persist experiments + hypotheses (including the rejected ones, rule 7)
     rejected_recorded = 0
@@ -326,13 +531,32 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
         "plan": plan,
         "walk_forward": True,
         "history_mutated": False,
-        "draws": n,
+        "draws": n_total,
+        "selection_draws": n,
         "tested_draws": sum(m["n"] for m in per_window_baseline.values()),
         "windows": [{"index": i, "from": s, "to": e, "size": e - s}
                     for i, (s, e) in enumerate(bounds)],
         "data_audit": audit,
         "statistics": stats,
         "baseline": baseline,
+        # --- protocol v3 blocks ---
+        "protocol_version": "v3",
+        "baselines": baselines_block,             # point 3
+        "diagnostics": diagnostics,               # point 4
+        "permutation_tests": permutation_block,   # point 5
+        "multiple_testing": {                     # point 6
+            "method": "Benjamini-Hochberg (FDR)",
+            "alpha": rlab.ALPHA,
+            "tests": len(results),
+            "significant_after_correction": sum(1 for r in results if r.get("significant_corrected")),
+        },
+        "golden_holdout": golden_block,           # point 7
+        "pipeline": [                             # point 8
+            "seguridad/auditoría", "split + golden holdout", "baselines separados",
+            "diagnósticos", "walk-forward", "permutación temporal",
+            "corrección múltiple", "challengers", "golden holdout",
+            "decisión champion", "generación de candidatos",
+        ],
         "experiments": results,
         "best": best,
         "verdict": verdict,
@@ -347,6 +571,11 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
         "rejected_recorded": rejected_recorded,
         "max_weight_delta": round(max_weight_delta, 4),
         "max_weight_delta_cap": MAX_WEIGHT_DELTA_PER_DRAW,
+        # constitution v3 evidence
+        "additional_number_excluded": True,   # only `numbers` is ever read
+        "pre_registered": len(rlab.PRE_REGISTERED),
+        "pre_registered_results": {c: ok for c, (ok, _) in prereg_results.items()},
+        "llm_wrote_predictions": False,
     }
     run["constitution"] = check_compliance(run)
     return run

@@ -12,11 +12,13 @@ from sqlalchemy.orm import Session
 from ..auth import get_current_user, get_current_admin
 from ..database import get_db
 from ..models import Experiment, Hypothesis, ModelVersion, User
-from ..engine.constitution import (MAX_WEIGHT_DELTA_PER_DRAW, MIN_IMPROVEMENT,
-                                   MIN_WINDOWS_WON, RULES)
+from ..engine.constitution import (MAX_P_VALUE, MAX_WEIGHT_DELTA_PER_DRAW,
+                                   MIN_IMPROVEMENT, MIN_WINDOWS_WON, RULES)
 from ..engine.game_config import GAME_KEYS, get_game
-from ..engine.research import (DEFAULT_WINDOW_SIZE, DEFAULT_WINDOWS, run_research)
+from ..engine.research import (DEFAULT_PERM_WINDOW, DEFAULT_PERMUTATIONS,
+                               DEFAULT_WINDOW_SIZE, DEFAULT_WINDOWS, run_research)
 from ..engine.agents import MasterAgent, MLResearcher
+from ..engine.research_lab import ALPHA, MIN_IMPROVEMENT_V3, PRE_REGISTERED
 from ..services import load_draw_rows
 
 router = APIRouter(prefix="/api/research", tags=["research"])
@@ -31,13 +33,15 @@ def _loads(raw: str | None) -> dict:
 
 @router.get("/constitution")
 def constitution():
-    """The 10 non-negotiable rules the research layer is held to."""
+    """The non-negotiable rules the research layer is held to (v3: 15 rules)."""
     return {
         "rules": RULES,
         "thresholds": {
             "minimum_improvement": MIN_IMPROVEMENT,
             "minimum_windows_won": MIN_WINDOWS_WON,
             "max_weight_delta_per_draw": MAX_WEIGHT_DELTA_PER_DRAW,
+            "maximum_q_value": MAX_P_VALUE,
+            "correction": "Benjamini-Hochberg (FDR)",
         },
     }
 
@@ -54,8 +58,11 @@ def plan(game_type: str, user: User = Depends(get_current_user)):
 @router.post("/run")
 def run(game_type: str, windows: int = DEFAULT_WINDOWS,
         window_size: int = DEFAULT_WINDOW_SIZE, seed: int = 42,
+        permutations: int = DEFAULT_PERMUTATIONS,
+        perm_window: int = DEFAULT_PERM_WINDOW,
         db: Session = Depends(get_db), user: User = Depends(get_current_admin)):
-    """Run a full autonomous research cycle (admin only — it is expensive)."""
+    """Run a full autonomous research cycle, protocol v3 (admin only — it is
+    expensive: multi-window walk-forward plus temporal permutation tests)."""
     if game_type not in GAME_KEYS:
         raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
     cfg = get_game(game_type)
@@ -64,11 +71,32 @@ def run(game_type: str, windows: int = DEFAULT_WINDOWS,
                             detail="El ciclo de investigación aplica a juegos de combinación.")
     windows = max(1, min(int(windows), 5))
     window_size = max(10, min(int(window_size), 80))
+    permutations = max(0, min(int(permutations), 200))
+    perm_window = max(5, min(int(perm_window), 60))
     history = [r["numbers"] for r in load_draw_rows(db, game_type)]
     if not history:
         raise HTTPException(status_code=400, detail="No hay sorteos cargados para este juego.")
-    return run_research(db, cfg, history, windows=windows,
-                        window_size=window_size, seed=seed)
+    return run_research(db, cfg, history, windows=windows, window_size=window_size,
+                        seed=seed, permutations=permutations, perm_window=perm_window)
+
+
+@router.get("/protocol")
+def protocol():
+    """The research protocol (v3) the cycle follows, points 3 to 8."""
+    return {
+        "version": "v3",
+        "points": {
+            "3": "Baselines separados: teórico, empírico exacto, de modelo y challengers. Nunca se mezclan.",
+            "4": "Diagnósticos de por qué no aparece señal: uniformidad, autocorrelación, cambio de régimen y pair-lift.",
+            "5": "Permutation testing temporal: se aleatoriza el orden de los sorteos conservando su composición.",
+            "6": "Anti-p-hacking: hipótesis pre-registradas y corrección Benjamini-Hochberg.",
+            "7": "Golden Holdout: 10% cronológico final, bloqueado e identificado por SHA-256.",
+            "8": "Pipeline fijo de producción.",
+        },
+        "pre_registered_hypotheses": PRE_REGISTERED,
+        "alpha": ALPHA,
+        "minimum_improvement": MIN_IMPROVEMENT_V3,
+    }
 
 
 @router.get("/experiments")
