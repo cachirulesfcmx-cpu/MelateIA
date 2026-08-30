@@ -827,3 +827,103 @@ def test_v4_architecture_and_cycle(client):
                      "&permutations=0&include_ml_lab=false", headers=ah)
     assert r2.status_code == 200
     assert [e for e in r2.json()["experiments"] if e["lab"] == "classical_ml"] == []
+
+
+def test_v5_autonomous_cycle_and_gate(client):
+    """The cycle knows when NOT to run, and the replication gate names what is missing."""
+    from app.engine.autonomous_cycle import (AutonomousResearchCycle, CATALOG,
+                                             generate_hypotheses, replication_gate)
+
+    cycle = AutonomousResearchCycle()
+    # no new draw → WAIT (re-running would only multiply tests on the same data)
+    idle = cycle.plan("melate", last_run_draws=2137, current_draws=2137)
+    assert idle["run"] is False
+    assert idle["decisions"][0]["action"] == "WAIT" and idle["states"] == []
+    # a new draw → the full 15-state protocol
+    active = cycle.plan("melate", last_run_draws=2136, current_draws=2137)
+    assert active["run"] is True and len(active["states"]) == 15
+    assert active["states"][0] == "INGEST" and active["states"][-1] == "REPORT"
+    assert active["states"].index("GOLDEN_HOLDOUT") < active["states"].index("REPLICATION")
+    assert active["states"].index("REPLICATION") < active["states"].index("CHAMPION_DECISION")
+
+    # hypothesis generator de-duplicates against what is already on record
+    assert generate_hypotheses([]) == CATALOG
+    assert generate_hypotheses(CATALOG) == []
+    assert CATALOG[0] not in generate_hypotheses([CATALOG[0].upper()])
+
+    # the gate reports each failing condition by name
+    none_ok = replication_gate(0.9, 0.9, 0.1, 0.6, confirmations=0)
+    assert none_ok["passed"] is False and len(none_ok["missing"]) == 4
+    partial = replication_gate(0.01, 0.01, 0.9, 0.6, confirmations=0)
+    assert partial["passed"] is False and partial["missing"] == ["replicacion_independiente"]
+    full = replication_gate(0.01, 0.01, 0.9, 0.6, confirmations=2)
+    assert full["passed"] is True and full["missing"] == []
+
+
+def test_v5_worker_result_is_challenger_only(client):
+    """A worker run can never become Champion on its own."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+
+    payload = {"game": "revancha", "model": "lstm", "status": "trained",
+               "validation_mean_hits": 0.99, "random_mean_hits": 0.6429,
+               "edge_vs_random": 0.35, "best_val_loss": 0.001, "epochs": 40}
+    # non-admin cannot publish
+    assert client.post("/api/research/worker-result", headers=uh, json=payload).status_code == 403
+    r = client.post("/api/research/worker-result", headers=ah, json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["role"] == "challenger"
+    assert body["promotion"] == "blocked_until_protocol_pass"
+
+    # even with an absurd reported edge, it is NOT the champion
+    champ = client.get("/api/research/champion?game_type=revancha", headers=uh).json()
+    assert champ["champion"] is None or champ["champion"]["model_name"] != "worker_lstm"
+
+    listed = client.get("/api/research/worker-challengers?game_type=revancha", headers=uh).json()
+    assert any(i["model_name"] == "worker_lstm" and i["role"] == "challenger"
+               for i in listed["items"])
+
+    # bad inputs are rejected
+    assert client.post("/api/research/worker-result", headers=ah,
+                       json={"game": "nope", "model": "lstm"}).status_code == 400
+    assert client.post("/api/research/worker-result", headers=ah,
+                       json={"game": "melate", "model": "gpt"}).status_code == 400
+
+
+def test_v5_cycle_plan_endpoint(client):
+    """/cycle-plan reports WAIT once a cycle has already seen every draw."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+
+    plan = client.get("/api/research/cycle-plan?game_type=melate", headers=uh)
+    assert plan.status_code == 200
+    body = plan.json()
+    assert "draws_now" in body and isinstance(body["open_hypotheses"], list)
+    assert len(body["replication_requirements"]) == 4
+
+    # run a cycle: it records how many draws existed at that moment
+    client.post("/api/research/run?game_type=melate&windows=2&window_size=12"
+                "&permutations=0&include_ml_lab=false", headers=ah)
+    after = client.get("/api/research/cycle-plan?game_type=melate", headers=uh).json()
+    assert after["draws_at_last_run"] == after["draws_now"]
+    assert after["run"] is False and after["decisions"][0]["action"] == "WAIT"
+
+
+def test_v5_worker_package_is_runnable(client):
+    """The worker degrades honestly and reads the real history."""
+    import subprocess, sys, json as _json, pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    out = subprocess.run([sys.executable, "-m", "worker.main", "--game", "melate",
+                          "--model", "qnn"],
+                         cwd=root, capture_output=True, text=True, timeout=300)
+    assert out.returncode == 0, out.stderr
+    res = _json.loads(out.stdout)
+    # pennylane is not installed in the web image: it must say so, not invent metrics
+    assert res["status"] in ("unavailable", "trained")
+    assert res["promotion"] == "blocked_until_protocol_pass"
+    assert res["role"] == "challenger"
+    assert res["draws"] > 1000            # it really loaded the melate history
+    if res["status"] == "unavailable":
+        assert "validation_mean_hits" not in res

@@ -28,6 +28,8 @@ from sqlalchemy.orm import Session
 from . import ensemble
 from . import research_lab as rlab
 from . import confirmation as cqueue
+from .autonomous_cycle import (STATES as CYCLE_STATES, generate_hypotheses,
+                               replication_gate)
 from .labs import ClassicalMLLab, DeepLearningLab, QuantumLab, StatisticalLab
 from .agents import (BacktestAgent, DataAgent, MasterAgent, MLResearcher,
                      OptimizerAgent, RiskAgent, StatisticianAgent,
@@ -462,6 +464,20 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
         else:
             queue_state = cqueue.fail(db, cfg.key, best["model_name"], run_id,
                                       policy["reason"])
+    # v5 REPLICATION GATE — every condition, reported one by one
+    best_perm = None
+    if best:
+        pb = permutation_block.get(best["model_name"]) if permutation_block else None
+        best_perm = (pb or {}).get("p_value")
+    gate = replication_gate(
+        q_value=best.get("q_value", 1.0) if best else 1.0,
+        permutation_p=best_perm if best_perm is not None else 1.0,
+        holdout_score=(golden_eval or {}).get("metrics", {}).get("mean_hits", 0.0),
+        baseline=baseline["mean_hits"],
+        confirmations=(queue_state or {}).get("confirmations", 0),
+        required_confirmations=(queue_state or {}).get("required", 2),
+    )
+
     ready = bool(queue_state and queue_state.get("ready_to_promote"))
     if best and policy["promote"] and not ready:
         # passed the statistics, still awaiting replication
@@ -544,7 +560,8 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
     rejected_recorded = 0
     if persist:
         db.add(Experiment(game_type=cfg.key, hypothesis="Baseline aleatorio (hipótesis nula)",
-                          model_name="random_baseline", params=json.dumps({"seed": seed}),
+                          model_name="random_baseline",
+                          params=json.dumps({"seed": seed, "draws_at_run": n_total}),
                           metrics=json.dumps(baseline), status="baseline", run_id=run_id))
         for r in results:
             status = ("champion" if promotion.get("promoted") and r["model_name"] == promotion.get("model_name")
@@ -655,6 +672,10 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
         },
         "block_bootstrap": bootstrap_block,
         "confirmation_queue": queue_state,
+        "replication_gate": gate,
+        "cycle_states": CYCLE_STATES,
+        "open_hypotheses": generate_hypotheses(
+            [h for h in rlab.PRE_REGISTERED.values()]),
         "baselines": baselines_block,             # point 3
         "diagnostics": diagnostics,               # point 4
         "permutation_tests": permutation_block,   # point 5

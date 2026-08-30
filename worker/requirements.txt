@@ -1,0 +1,4 @@
+# Training worker only — these are NOT installed in the web service on purpose.
+numpy>=1.26,<3
+torch>=2.2,<3
+pennylane>=0.35,<1

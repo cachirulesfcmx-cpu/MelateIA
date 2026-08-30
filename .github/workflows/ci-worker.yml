@@ -1,0 +1,25 @@
+name: worker-ci
+on: [push, pull_request]
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile worker package
+        run: python -m compileall worker
+      - name: Worker degrades honestly without torch/pennylane
+        run: |
+          python -m worker.main --game melate --model lstm > out.json
+          python - <<'PY'
+          import json
+          r = json.load(open("out.json"))
+          assert r["role"] == "challenger", r
+          assert r["promotion"] == "blocked_until_protocol_pass", r
+          assert r["draws"] > 1000, r          # it read the real history
+          if r["status"] == "unavailable":
+              assert "validation_mean_hits" not in r, "no debe inventar métricas"
+          print("worker OK:", r["status"])
+          PY

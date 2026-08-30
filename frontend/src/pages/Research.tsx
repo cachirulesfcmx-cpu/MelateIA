@@ -66,6 +66,14 @@ type Run = {
     best_arm_hits?: null | { arm: string; ci95: number[]; excludes_random: boolean; random_baseline: number };
   };
   confirmation_queue?: null | { message: string; status: string; confirmations: number; required: number };
+  replication_gate?: {
+    passed: boolean;
+    checks: Record<string, boolean>;
+    missing: string[];
+    requires: string[];
+    reason: string;
+  };
+  cycle_states?: string[];
   baseline?: { mean_hits: number; expected_random: number };
   experiments?: Arm[];
   statistics?: { uniformity: { p_value: number; uniform: boolean; chi_square: number }; reading: string };
@@ -91,6 +99,11 @@ type Queue = {
   note: string;
   items: { game_type: string; model_name: string; status: string; confirmations: number; required: number }[];
 };
+type WorkerChallengers = {
+  note: string;
+  items: { game_type: string; model_name: string; version: string; role: string;
+           edge_vs_random: number; metrics: Record<string, unknown> }[];
+};
 type Champion = {
   champion: null | { model_name: string; score: number; baseline_score: number; edge_vs_random: number; windows: number };
   note: string | null;
@@ -115,6 +128,7 @@ export default function Research() {
   const [tab, setTab] = useState<"ciclo" | "arquitectura" | "hipotesis" | "reglas">("ciclo");
   const [arch, setArch] = useState<Architecture | null>(null);
   const [queue, setQueue] = useState<Queue | null>(null);
+  const [workers, setWorkers] = useState<WorkerChallengers | null>(null);
 
   const combinationGames = games.filter((g) => g.kind !== "positional");
 
@@ -127,6 +141,7 @@ export default function Research() {
     api.get<Hypothesis[]>(`/research/hypotheses?game_type=${game}&limit=40`).then(setHyps).catch(() => setHyps([]));
     api.get<Champion>(`/research/champion?game_type=${game}`).then(setChamp).catch(() => setChamp(null));
     api.get<Queue>(`/research/queue?game_type=${game}`).then(setQueue).catch(() => setQueue(null));
+    api.get<WorkerChallengers>(`/research/worker-challengers?game_type=${game}`).then(setWorkers).catch(() => setWorkers(null));
   }, [game]);
 
   async function launch() {
@@ -370,6 +385,25 @@ export default function Research() {
                 </GlassCard>
               )}
 
+              {run.replication_gate && (
+                <GlassCard className="!p-3">
+                  <p className="text-[11px] text-white/40 uppercase tracking-wide mb-2">
+                    Compuerta de replicación ·{" "}
+                    <span className={run.replication_gate.passed ? "text-emerald-300" : "text-white/60"}>
+                      {run.replication_gate.passed ? "superada" : "no superada"}
+                    </span>
+                  </p>
+                  <div className="space-y-1">
+                    {Object.entries(run.replication_gate.checks).map(([k, ok]) => (
+                      <div key={k} className="flex gap-2 text-[11px]">
+                        <span className={ok ? "text-emerald-400" : "text-rose-400"}>{ok ? "✓" : "✕"}</span>
+                        <span className="text-white/65">{k.replace(/_/g, " ")}</span>
+                      </div>
+                    ))}
+                  </div>
+                </GlassCard>
+              )}
+
               {run.diagnostics?.reading && (
                 <GlassCard className="!p-3">
                   <p className="text-[11px] text-white/40 uppercase tracking-wide mb-1">
@@ -505,6 +539,33 @@ export default function Research() {
                 </div>
               )}
               <p className="text-[10px] text-white/35 mt-2 leading-relaxed">{queue.note}</p>
+            </GlassCard>
+          )}
+
+          {workers && (
+            <GlassCard className="!p-3">
+              <p className="text-[11px] text-white/40 uppercase tracking-wide mb-1">
+                Training Worker · challengers publicados
+              </p>
+              {workers.items.length === 0 ? (
+                <p className="text-xs text-white/60">
+                  Ninguno todavía. El worker entrena LSTM/Transformer/QNN fuera del servicio web
+                  y publica el resultado aquí como challenger.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {workers.items.map((w) => (
+                    <div key={w.version} className="flex items-center justify-between text-xs">
+                      <span className="text-white/75">{w.model_name.replace("worker_", "")}</span>
+                      <span className="tnum text-white/50">
+                        ventaja {w.edge_vs_random > 0 ? "+" : ""}
+                        {w.edge_vs_random.toFixed(4)} · {w.role}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="text-[10px] text-white/35 mt-2 leading-relaxed">{workers.note}</p>
             </GlassCard>
           )}
 
