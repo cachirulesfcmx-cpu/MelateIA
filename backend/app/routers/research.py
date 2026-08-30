@@ -19,6 +19,9 @@ from ..engine.research import (DEFAULT_PERM_WINDOW, DEFAULT_PERMUTATIONS,
                                DEFAULT_WINDOW_SIZE, DEFAULT_WINDOWS, run_research)
 from ..engine.agents import MasterAgent, MLResearcher
 from ..engine.research_lab import ALPHA, MIN_IMPROVEMENT_V3, PRE_REGISTERED
+from ..engine.labs import ClassicalMLLab, DeepLearningLab, QuantumLab
+from ..engine import confirmation
+from ..engine.confirmation import REQUIRED_CONFIRMATIONS
 from ..services import load_draw_rows
 
 router = APIRouter(prefix="/api/research", tags=["research"])
@@ -60,6 +63,7 @@ def run(game_type: str, windows: int = DEFAULT_WINDOWS,
         window_size: int = DEFAULT_WINDOW_SIZE, seed: int = 42,
         permutations: int = DEFAULT_PERMUTATIONS,
         perm_window: int = DEFAULT_PERM_WINDOW,
+        include_ml_lab: bool = True,
         db: Session = Depends(get_db), user: User = Depends(get_current_admin)):
     """Run a full autonomous research cycle, protocol v3 (admin only — it is
     expensive: multi-window walk-forward plus temporal permutation tests)."""
@@ -77,7 +81,8 @@ def run(game_type: str, windows: int = DEFAULT_WINDOWS,
     if not history:
         raise HTTPException(status_code=400, detail="No hay sorteos cargados para este juego.")
     return run_research(db, cfg, history, windows=windows, window_size=window_size,
-                        seed=seed, permutations=permutations, perm_window=perm_window)
+                        seed=seed, permutations=permutations, perm_window=perm_window,
+                        include_ml_lab=include_ml_lab)
 
 
 @router.get("/protocol")
@@ -96,6 +101,50 @@ def protocol():
         "pre_registered_hypotheses": PRE_REGISTERED,
         "alpha": ALPHA,
         "minimum_improvement": MIN_IMPROVEMENT_V3,
+    }
+
+
+@router.get("/architecture")
+def architecture():
+    """The v4 pipeline, as data — the same flow the cycle actually executes."""
+    lab = ClassicalMLLab()
+    return {
+        "version": "v4",
+        "flow": [
+            {"stage": "api_gateway", "detail": "MelatePro / Vercel → este backend"},
+            {"stage": "autonomous_research_agent", "detail": "orquesta el ciclo completo"},
+            {"stage": "statistical_lab", "detail": "χ² · información mutua · deriva · pares · change-point"},
+            {"stage": "classical_ml_lab", "detail": "XGBoost · ExtraTrees · RandomForest · GradientBoosting",
+             "availability": lab.available_models()},
+            {"stage": "deep_learning_lab", "detail": "LSTM · Transformer",
+             "availability": {c["name"]: c["status"] for c in DeepLearningLab().run()["challengers"]}},
+            {"stage": "quantum_challenger", "detail": "red neuronal cuántica",
+             "availability": {QuantumLab().run()["challenger"]["name"]:
+                              QuantumLab().run()["challenger"]["status"]}},
+            {"stage": "permutation_test", "detail": "aleatoriza el orden temporal"},
+            {"stage": "block_bootstrap", "detail": "remuestreo por bloques contiguos"},
+            {"stage": "multiple_testing", "detail": "Benjamini-Hochberg (FDR)"},
+            {"stage": "golden_holdout", "detail": "10% final bloqueado con SHA-256"},
+            {"stage": "confirmation_queue", "detail": f"replicación independiente ({REQUIRED_CONFIRMATIONS} corridas)"},
+            {"stage": "champion_challenger", "detail": "promoción solo con evidencia replicada"},
+            {"stage": "candidate_engine", "detail": "boletos + validación de riesgo"},
+            {"stage": "melatepro", "detail": "la app consume los candidatos"},
+        ],
+        "note": ("Los challengers profundos y cuántico se declaran con su estado real. "
+                 "El servicio web no entrena PyTorch dentro de una petición; eso vive en "
+                 "un worker, y ningún laboratorio inventa métricas cuando no está disponible."),
+    }
+
+
+@router.get("/queue")
+def queue(game_type: str | None = None, db: Session = Depends(get_db),
+          user: User = Depends(get_current_user)):
+    """Candidates awaiting independent replication before becoming Champion."""
+    return {
+        "required_confirmations": REQUIRED_CONFIRMATIONS,
+        "items": confirmation.listing(db, game_type),
+        "note": ("Un modelo que pasa todas las compuertas no se promueve de inmediato: "
+                 "debe repetir el resultado en corridas independientes."),
     }
 
 

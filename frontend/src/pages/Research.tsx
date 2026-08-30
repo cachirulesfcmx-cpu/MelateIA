@@ -25,6 +25,7 @@ type Arm = {
   significance: { p_value: number; significant: boolean; mean_diff: number };
   q_value?: number;
   significant_corrected?: boolean;
+  lab?: string;
   accepted: boolean;
   reason: string;
 };
@@ -54,6 +55,17 @@ type Run = {
     evaluation?: { label: string; edge_vs_random: number; passed: boolean; note: string };
   };
   pre_registered_results?: Record<string, boolean>;
+  labs?: {
+    statistical: { signal_found: boolean; findings: string[] };
+    classical_ml: { availability: Record<string, string>; evaluated: string[]; enabled: boolean };
+    deep_learning: { challengers: { name: string; status: string; rationale: string }[] };
+    quantum: { challenger: { name: string; status: string; rationale: string } };
+  };
+  block_bootstrap?: {
+    draw_sums?: { ci95: number[]; observed: number };
+    best_arm_hits?: null | { arm: string; ci95: number[]; excludes_random: boolean; random_baseline: number };
+  };
+  confirmation_queue?: null | { message: string; status: string; confirmations: number; required: number };
   baseline?: { mean_hits: number; expected_random: number };
   experiments?: Arm[];
   statistics?: { uniformity: { p_value: number; uniform: boolean; chi_square: number }; reading: string };
@@ -68,6 +80,16 @@ type Hypothesis = {
   status: string;
   evidence: Record<string, unknown>;
   created_at: string;
+};
+type Architecture = {
+  version: string;
+  flow: { stage: string; detail: string; availability?: Record<string, string> }[];
+  note: string;
+};
+type Queue = {
+  required_confirmations: number;
+  note: string;
+  items: { game_type: string; model_name: string; status: string; confirmations: number; required: number }[];
 };
 type Champion = {
   champion: null | { model_name: string; score: number; baseline_score: number; edge_vs_random: number; windows: number };
@@ -90,17 +112,21 @@ export default function Research() {
   const [hyps, setHyps] = useState<Hypothesis[]>([]);
   const [champ, setChamp] = useState<Champion | null>(null);
   const [running, setRunning] = useState(false);
-  const [tab, setTab] = useState<"ciclo" | "hipotesis" | "reglas">("ciclo");
+  const [tab, setTab] = useState<"ciclo" | "arquitectura" | "hipotesis" | "reglas">("ciclo");
+  const [arch, setArch] = useState<Architecture | null>(null);
+  const [queue, setQueue] = useState<Queue | null>(null);
 
   const combinationGames = games.filter((g) => g.kind !== "positional");
 
   useEffect(() => {
     api.get<Constitution>("/research/constitution").then(setConstitution).catch(() => {});
+    api.get<Architecture>("/research/architecture").then(setArch).catch(() => {});
   }, []);
 
   useEffect(() => {
     api.get<Hypothesis[]>(`/research/hypotheses?game_type=${game}&limit=40`).then(setHyps).catch(() => setHyps([]));
     api.get<Champion>(`/research/champion?game_type=${game}`).then(setChamp).catch(() => setChamp(null));
+    api.get<Queue>(`/research/queue?game_type=${game}`).then(setQueue).catch(() => setQueue(null));
   }, [game]);
 
   async function launch() {
@@ -113,6 +139,7 @@ export default function Research() {
       else notify("Ciclo de investigación completado", "success");
       api.get<Hypothesis[]>(`/research/hypotheses?game_type=${game}&limit=40`).then(setHyps).catch(() => {});
       api.get<Champion>(`/research/champion?game_type=${game}`).then(setChamp).catch(() => {});
+      api.get<Queue>(`/research/queue?game_type=${game}`).then(setQueue).catch(() => {});
     } catch (err) {
       notify((err as Error).message, "error");
     } finally {
@@ -132,7 +159,7 @@ export default function Research() {
       <GameSelector games={combinationGames} value={game} onChange={setGame} />
 
       <div className="flex gap-2">
-        {(["ciclo", "hipotesis", "reglas"] as const).map((t) => (
+        {(["ciclo", "arquitectura", "hipotesis", "reglas"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -140,7 +167,7 @@ export default function Research() {
               tab === t ? "bg-white/15 text-white" : "bg-white/[0.05] text-white/50"
             }`}
           >
-            {t === "ciclo" ? "Ciclo" : t === "hipotesis" ? "Hipótesis" : "Constitución"}
+            {t === "ciclo" ? "Ciclo" : t === "arquitectura" ? "Arquitectura" : t === "hipotesis" ? "Hipótesis" : "Constitución"}
           </button>
         ))}
       </div>
@@ -264,6 +291,85 @@ export default function Research() {
                 </GlassCard>
               )}
 
+              {run.labs && (
+                <GlassCard className="!p-3">
+                  <p className="text-[11px] text-white/40 uppercase tracking-wide mb-2">Laboratorios</p>
+                  <div className="space-y-2 text-xs">
+                    <div>
+                      <p className="text-white/75 font-medium">
+                        Estadístico ·{" "}
+                        <span className={run.labs.statistical.signal_found ? "text-amber-300" : "text-white/50"}>
+                          {run.labs.statistical.signal_found ? "señal detectada" : "sin señal"}
+                        </span>
+                      </p>
+                      {run.labs.statistical.findings.map((f, i) => (
+                        <p key={i} className="text-[10px] text-white/50 leading-relaxed">· {f}</p>
+                      ))}
+                    </div>
+                    <div>
+                      <p className="text-white/75 font-medium">
+                        ML clásico · {run.labs.classical_ml.evaluated.length} challengers evaluados
+                      </p>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {Object.entries(run.labs.classical_ml.availability).map(([k, v]) => (
+                          <span
+                            key={k}
+                            className={`text-[9px] px-1.5 py-0.5 rounded-md border ${
+                              v === "disponible"
+                                ? "text-emerald-300 border-emerald-400/25 bg-emerald-500/10"
+                                : "text-white/35 border-white/10 bg-white/[0.04]"
+                            }`}
+                          >
+                            {k}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-white/75 font-medium">Deep learning y cuántico</p>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {[...run.labs.deep_learning.challengers, run.labs.quantum.challenger].map((c) => (
+                          <span
+                            key={c.name}
+                            className={`text-[9px] px-1.5 py-0.5 rounded-md border ${
+                              c.status === "disponible"
+                                ? "text-emerald-300 border-emerald-400/25 bg-emerald-500/10"
+                                : "text-white/35 border-white/10 bg-white/[0.04]"
+                            }`}
+                          >
+                            {c.name}
+                          </span>
+                        ))}
+                      </div>
+                      <p className="text-[10px] text-white/35 mt-1 leading-relaxed">
+                        No instalados en el servicio web: se declara su estado real en vez de reportar
+                        métricas inventadas.
+                      </p>
+                    </div>
+                  </div>
+                </GlassCard>
+              )}
+
+              {run.block_bootstrap?.best_arm_hits && (
+                <GlassCard className="!p-3">
+                  <p className="text-[11px] text-white/40 uppercase tracking-wide mb-1">
+                    Block bootstrap · mejor brazo
+                  </p>
+                  <p className="text-xs text-white/70 leading-relaxed">
+                    IC 95% de aciertos:{" "}
+                    <span className="tnum">
+                      [{run.block_bootstrap.best_arm_hits.ci95[0]}, {run.block_bootstrap.best_arm_hits.ci95[1]}]
+                    </span>{" "}
+                    frente al azar {run.block_bootstrap.best_arm_hits.random_baseline}.{" "}
+                    {run.block_bootstrap.best_arm_hits.excludes_random ? (
+                      <span className="text-emerald-300">El intervalo excluye al azar.</span>
+                    ) : (
+                      <span className="text-amber-300">El intervalo contiene al azar: la ventaja no es sólida.</span>
+                    )}
+                  </p>
+                </GlassCard>
+              )}
+
               {run.diagnostics?.reading && (
                 <GlassCard className="!p-3">
                   <p className="text-[11px] text-white/40 uppercase tracking-wide mb-1">
@@ -370,6 +476,74 @@ export default function Research() {
           {run?.status === "insufficient_data" && (
             <GlassCard className="!p-3">
               <p className="text-xs text-white/70">{run.message}</p>
+            </GlassCard>
+          )}
+        </div>
+      )}
+
+      {tab === "arquitectura" && (
+        <div className="space-y-2">
+          {queue && (
+            <GlassCard className="!p-3">
+              <p className="text-[11px] text-white/40 uppercase tracking-wide mb-1">
+                Cola de confirmación · requiere {queue.required_confirmations} corridas independientes
+              </p>
+              {queue.items.length === 0 ? (
+                <p className="text-xs text-white/60">
+                  Vacía: ningún candidato ha superado todas las compuertas todavía.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {queue.items.map((it) => (
+                    <div key={it.model_name} className="flex items-center justify-between text-xs">
+                      <span className="text-white/75">{it.model_name}</span>
+                      <span className="tnum text-white/50">
+                        {it.confirmations}/{it.required} · {it.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="text-[10px] text-white/35 mt-2 leading-relaxed">{queue.note}</p>
+            </GlassCard>
+          )}
+
+          {arch && (
+            <GlassCard className="!p-0 overflow-hidden">
+              <div className="p-3 border-b border-white/10">
+                <p className="text-xs font-semibold">Pipeline {arch.version}</p>
+                <p className="text-[10px] text-white/40">El orden que el ciclo ejecuta de verdad</p>
+              </div>
+              <div className="divide-y divide-white/5">
+                {arch.flow.map((s, i) => (
+                  <div key={s.stage} className="p-3">
+                    <div className="flex items-start gap-2">
+                      <span className="text-[10px] text-white/30 tnum mt-0.5 w-5 shrink-0">{i + 1}</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium">{s.stage.replace(/_/g, " ")}</p>
+                        <p className="text-[11px] text-white/50 leading-relaxed">{s.detail}</p>
+                        {s.availability && (
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {Object.entries(s.availability).map(([k, v]) => (
+                              <span
+                                key={k}
+                                className={`text-[9px] px-1.5 py-0.5 rounded-md border ${
+                                  v === "disponible"
+                                    ? "text-emerald-300 border-emerald-400/25 bg-emerald-500/10"
+                                    : "text-white/40 border-white/10 bg-white/[0.04]"
+                                }`}
+                              >
+                                {k}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] text-white/35 p-3 border-t border-white/10 leading-relaxed">{arch.note}</p>
             </GlassCard>
           )}
         </div>

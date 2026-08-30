@@ -212,6 +212,31 @@ class ModelVersion(Base):
     promoted_at = Column(DateTime, default=utcnow)
 
 
+class ConfirmationQueue(Base):
+    """Candidates awaiting independent replication before becoming Champion.
+
+    A model that clears every gate (corrected significance, multiple windows and
+    the Golden Holdout) does NOT become Champion straight away: it enters this
+    queue and must repeat the feat in independent runs (different seeds). One
+    lucky pass is not evidence.
+    """
+    __tablename__ = "confirmation_queue"
+    __table_args__ = (UniqueConstraint("game_type", "model_name", name="uq_queue_game_model"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    game_type = Column(String, index=True, nullable=False)
+    model_name = Column(String, nullable=False)
+    status = Column(String, default="pendiente")   # pendiente | confirmado | promovido | descartado
+    confirmations = Column(Integer, default=0)
+    required = Column(Integer, default=2)
+    first_run_id = Column(String, default="")
+    last_run_id = Column(String, default="")
+    seeds = Column(Text, default="[]")             # JSON list of seeds that confirmed it
+    evidence = Column(Text, default="{}")          # JSON
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class StrategyContextPerf(Base):
     """Per-context (regime) reinforcement weights for the contextual bandit."""
     __tablename__ = "strategy_context_perf"

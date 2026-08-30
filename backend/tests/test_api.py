@@ -455,7 +455,8 @@ def test_research_cycle_runs_and_is_honest(client):
     # the random baseline is always measured and reported (rule 4)
     assert run["baseline"]["mean_hits"] >= 0 and "expected_random" in run["baseline"]
     # every arm carries out-of-sample metrics and a significance test (rules 3, 9)
-    assert len(run["experiments"]) == 16   # 15 models + fused ensemble
+    # 15 statistical models + fused ensemble + the classical ML challengers
+    assert len(run["experiments"]) >= 16
     for arm in run["experiments"]:
         assert "p_value" in arm["significance"]
         assert arm["metrics"]["n"] > 0
@@ -610,7 +611,7 @@ def test_research_cycle_v3_protocol(client):
                     "&permutations=5&perm_window=6", headers=ah)
     assert r.status_code == 200, r.text
     run = r.json()
-    assert run["status"] == "ok" and run["protocol_version"] == "v3"
+    assert run["status"] == "ok" and run["protocol_version"] == "v4"
 
     # point 7 — golden holdout is locked and excluded from selection
     gh = run["golden_holdout"]
@@ -642,8 +643,187 @@ def test_research_cycle_v3_protocol(client):
     # point 4 — diagnostics ran
     assert run["diagnostics"]["reading"]
     # point 8 — the pipeline order is reported
-    assert run["pipeline"][0].startswith("seguridad")
+    assert run["pipeline"][0] == "api gateway"   # v4 antepone el gateway
 
     # the constitution now audits 15 rules and still passes
     assert len(run["constitution"]["checks"]) == 15
     assert run["constitution"]["compliant"] is True
+
+
+def test_v4_statistical_tools(client):
+    """MI, change-point, drift and block bootstrap must not cry wolf on noise."""
+    from app.engine import research_lab as rlab
+    import random as _r
+
+    rng = _r.Random(9)
+    hist = [sorted(rng.sample(range(1, 57), 6)) for _ in range(700)]
+
+    # mutual information: the top pair of ~1,540 is decided against an EMPIRICAL
+    # null of the maximum, not an asymptotic approximation that flags noise.
+    mi = rlab.mutual_information_pairs(hist, 56)
+    assert len(mi) == 10 and mi[0]["mi"] >= mi[-1]["mi"]
+    null = rlab.max_mi_null(hist, 56, reps=25)
+    assert null["available"] and null["null_max_p95"] > 0 and null["enough_reps"]
+    sig = rlab.mi_significance(mi, len(hist), 56, null=null)
+    assert sig["decided_by"] == "null empírico del máximo"
+    assert isinstance(sig["significant"], bool)   # nunca un numpy.bool_ (rompe el JSON)
+
+    # Calibración: un umbral al percentil 95 marca ~5% de las veces por
+    # definición, así que lo que debe cumplirse es que en datos aleatorios la
+    # MI se marque en una MINORÍA de casos, no que nunca se marque.
+    flagged = 0
+    for s_ in range(5):
+        r2 = _r.Random(100 + s_)
+        h2 = [sorted(r2.sample(range(1, 57), 6)) for _ in range(400)]
+        m2 = rlab.mutual_information_pairs(h2, 56)
+        n2 = rlab.max_mi_null(h2, 56, reps=20, seed=7 + s_)
+        if rlab.mi_significance(m2, len(h2), 56, null=n2)["significant"]:
+            flagged += 1
+    assert flagged <= 2, f"demasiados falsos positivos de MI: {flagged}/5"
+
+    # sin suficientes repeticiones no se declara significancia
+    weak = rlab.max_mi_null(hist, 56, reps=5)
+    assert weak["enough_reps"] is False
+    assert rlab.mi_significance(mi, len(hist), 56, null=weak)["significant"] is False
+
+    cp = rlab.change_point(hist)
+    assert cp["available"] and cp["significant"] is False
+    assert rlab.change_point(hist[:50])["available"] is False
+
+    dr = rlab.drift_l1(hist, 56)
+    assert dr["available"] and dr["above_noise"] is False
+
+    bb = rlab.block_bootstrap(hist, block=10, reps=100, seed=1)
+    assert bb["available"] and bb["ci95"][0] <= bb["observed"] <= bb["ci95"][1]
+    assert bb["block_size"] == 10
+    # a custom statistic works too (used for per-arm hit rates)
+    hits = rlab.block_bootstrap([[1], [0], [1], [0]] * 30, block=5, reps=50,
+                                statistic=lambda s: sum(x[0] for x in s) / len(s))
+    assert 0.0 <= hits["ci95"][0] <= hits["ci95"][1] <= 1.0
+
+
+def test_v4_labs(client):
+    """The three labs report real availability and produce real challengers."""
+    from app.engine.labs import ClassicalMLLab, DeepLearningLab, QuantumLab, StatisticalLab
+    from app.engine.game_config import get_game
+    import random as _r
+
+    cfg = get_game("melate")
+    rng = _r.Random(4)
+    hist = [sorted(rng.sample(range(1, 57), 6)) for _ in range(500)]
+
+    sl = StatisticalLab().run(hist, cfg, mi_null_reps=25)
+    assert isinstance(sl["signal_found"], bool)
+    assert len(sl["findings"]) >= 2
+    # el resto de detectores sí deben quedar mudos en datos aleatorios
+    assert sl["change_point"]["significant"] is False
+    assert sl["drift"]["above_noise"] is False
+    assert sl["diagnostics"]["autocorrelation_above_noise"] is False
+
+    lab = ClassicalMLLab()
+    avail = lab.available_models()
+    assert avail["xgboost"] == "disponible" and avail["extra_trees"] == "disponible"
+    # heavy optional frameworks are declared, never faked
+    assert avail["catboost"] == "dependencia_opcional_ausente"
+
+    keys = [k for k, v in avail.items() if v == "disponible"]
+    fitted = lab.fit_window(hist[:400], cfg, keys)
+    assert len(fitted) >= 2
+    for name, model in fitted.items():
+        scores = lab.scores(model, hist[:450], cfg)
+        assert len(scores) == 56
+        assert all(0.0 <= v <= 1.0 for v in scores.values()), name
+
+    deep = DeepLearningLab().run()
+    assert {c["name"] for c in deep["challengers"]} == {"lstm", "transformer"}
+    for c in deep["challengers"]:
+        assert c["evaluated"] is False and c["rationale"]
+    q = QuantumLab().run()["challenger"]
+    assert q["name"] == "quantum_neural_network" and q["evaluated"] is False
+
+
+def test_v4_confirmation_queue(client):
+    """A winner must replicate in independent runs before becoming Champion."""
+    from app.database import SessionLocal
+    from app.engine import confirmation as cq
+
+    db = SessionLocal()
+    try:
+        ev = {"edge_vs_random": 0.3}
+        first = cq.submit(db, "revanchita", "arm_test", "run1", seed=1, evidence=ev)
+        assert first["action"] == "encolado" and first["confirmations"] == 1
+        assert first["ready_to_promote"] is False
+
+        # the same seed is NOT an independent confirmation
+        again = cq.submit(db, "revanchita", "arm_test", "run2", seed=1, evidence=ev)
+        assert again["confirmations"] == 1 and again["ready_to_promote"] is False
+
+        second = cq.submit(db, "revanchita", "arm_test", "run3", seed=7, evidence=ev)
+        assert second["confirmations"] == 2 and second["ready_to_promote"] is True
+        assert second["status"] == "confirmado"
+
+        cq.mark_promoted(db, "revanchita", "arm_test")
+        items = cq.listing(db, "revanchita")
+        assert items[0]["status"] == "promovido"
+
+        # a candidate that stops passing is discarded, and the reason is kept
+        cq.submit(db, "revanchita", "arm_fail", "runA", seed=1, evidence=ev)
+        out = cq.fail(db, "revanchita", "arm_fail", "runB", "dejó de superar el umbral")
+        assert out["status"] == "descartado"
+        rec = next(i for i in cq.listing(db, "revanchita") if i["model_name"] == "arm_fail")
+        assert rec["evidence"]["discarded_reason"] == "dejó de superar el umbral"
+    finally:
+        db.close()
+
+
+def test_v4_architecture_and_cycle(client):
+    """The advertised architecture is the pipeline the cycle really runs."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+
+    a = client.get("/api/research/architecture", headers=uh).json()
+    assert a["version"] == "v4"
+    stages = [s["stage"] for s in a["flow"]]
+    for expected in ("api_gateway", "statistical_lab", "classical_ml_lab", "deep_learning_lab",
+                     "quantum_challenger", "permutation_test", "block_bootstrap",
+                     "multiple_testing", "golden_holdout", "confirmation_queue",
+                     "champion_challenger", "candidate_engine"):
+        assert expected in stages, expected
+    # the diagram's order is respected
+    assert stages.index("golden_holdout") < stages.index("confirmation_queue")
+    assert stages.index("confirmation_queue") < stages.index("champion_challenger")
+    assert stages.index("block_bootstrap") < stages.index("multiple_testing")
+
+    qz = client.get("/api/research/queue?game_type=melate", headers=uh).json()
+    assert qz["required_confirmations"] >= 2 and isinstance(qz["items"], list)
+
+    r = client.post("/api/research/run?game_type=melate&windows=2&window_size=12"
+                    "&permutations=4&perm_window=6", headers=ah)
+    assert r.status_code == 200, r.text
+    run = r.json()
+    assert run["protocol_version"] == "v4"
+    assert run["architecture"]["gates"][-1] == "confirmation_queue"
+
+    labs = run["labs"]
+    assert labs["statistical"]["lab"] == "statistical"
+    assert labs["classical_ml"]["enabled"] is True
+    # the classical ML challengers were really evaluated as arms
+    ml_arms = [e for e in run["experiments"] if e["lab"] == "classical_ml"]
+    assert len(ml_arms) >= 2
+    assert len(run["experiments"]) > 16          # 15 statistical + ensemble + ML
+    assert run["multiple_testing"]["tests"] == len(run["experiments"])
+    for arm in ml_arms:
+        assert arm["metrics"]["n"] > 0 and "q_value" in arm
+
+    # deep/quantum report status, never invented numbers
+    for c in labs["deep_learning"]["challengers"] + [labs["quantum"]["challenger"]]:
+        assert c["evaluated"] is False
+
+    assert run["block_bootstrap"]["draw_sums"]["available"] is True
+    assert run["constitution"]["compliant"] is True
+
+    # the ML lab can be switched off without breaking the cycle
+    r2 = client.post("/api/research/run?game_type=melate&windows=2&window_size=12"
+                     "&permutations=0&include_ml_lab=false", headers=ah)
+    assert r2.status_code == 200
+    assert [e for e in r2.json()["experiments"] if e["lab"] == "classical_ml"] == []
