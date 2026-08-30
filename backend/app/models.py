@@ -212,6 +212,28 @@ class ModelVersion(Base):
     promoted_at = Column(DateTime, default=utcnow)
 
 
+class ResearchMemory(Base):
+    """Research Memory 2.0 — what has already been asked, and what came out.
+
+    Keyed by a SHA-256 of (game, hypothesis, params) so an equivalent experiment
+    is recognised instead of being run again. The reference implementation keeps
+    this in a dict, which is lost on restart — memory that forgets between runs
+    does not prevent anything.
+    """
+    __tablename__ = "research_memory"
+    __table_args__ = (UniqueConstraint("fingerprint", name="uq_memory_fingerprint"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    fingerprint = Column(String, index=True, nullable=False)
+    game_type = Column(String, index=True, nullable=False)
+    hypothesis = Column(Text, nullable=False)
+    params = Column(Text, default="{}")
+    result = Column(Text, default="{}")
+    times_seen = Column(Integer, default=1)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class ModelCard(Base):
     """Full provenance record of a model: what it was trained on, how it scored,
     every gate it faced, and the decision that followed.
