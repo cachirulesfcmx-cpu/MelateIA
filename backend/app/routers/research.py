@@ -23,6 +23,10 @@ from ..engine.research_lab import ALPHA, MIN_IMPROVEMENT_V3, PRE_REGISTERED
 from ..engine.labs import ClassicalMLLab, DeepLearningLab, QuantumLab
 from ..engine import confirmation
 from ..engine import model_cards
+from ..engine import portfolio as pf
+from ..engine import research_memory as rmem
+from ..engine import ensemble
+from ..engine.agents import RiskAgent
 from ..engine.confirmation import REQUIRED_CONFIRMATIONS
 from ..engine.autonomous_cycle import (AutonomousResearchCycle, generate_hypotheses,
                                        replication_gate)
@@ -32,6 +36,7 @@ from ..engine.autonomous_researcher import (PROTECTED as PROTECTED_KEYS,
 from ..services import load_draw_rows
 
 router = APIRouter(prefix="/api/research", tags=["research"])
+risk_agent = RiskAgent()
 
 
 def _loads(raw: str | None) -> dict:
@@ -265,6 +270,95 @@ def worker_challengers(game_type: str | None = None, limit: int = 20,
         "note": ("Ningún resultado del worker puede ser Champion por sí solo; "
                  "la promoción exige el protocolo completo."),
     }
+
+
+@router.get("/portfolio")
+def portfolio(game_type: str, size: int = 10, overlap_limit: int = 3, seed: int = 42,
+              db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """A diversified candidate portfolio — coverage, never a higher chance to win.
+
+    Constitution rule 16: optimizing a portfolio does not make it more likely to
+    win. Spreading the same fixed probability across more distinct outcomes buys
+    coverage. The response says so, with the real odds attached.
+    """
+    if game_type not in GAME_KEYS:
+        raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
+    cfg = get_game(game_type)
+    if cfg.kind == "positional":
+        raise HTTPException(status_code=400,
+                            detail="El portafolio aplica a juegos de combinación.")
+    history = [r["numbers"] for r in load_draw_rows(db, game_type)]
+    if len(history) < 60:
+        raise HTTPException(status_code=400, detail="Historial insuficiente.")
+    size = max(1, min(int(size), 30))
+    overlap_limit = max(0, min(int(overlap_limit), cfg.pick - 1))
+
+    engine_pf = pf.PortfolioEngine(cfg)
+    info = ensemble.compute_weights(history, cfg)
+    fused = ensemble.fused_probabilities(history, cfg, weights=info["weights"])
+    meta = ensemble.meta_probabilities(history, cfg, fused)
+    searcher = pf.EvolutionarySearch(cfg, seed=seed)
+    fitness = lambda c: sum(meta.get(n, 0.0) for n in c)
+    seed_pop = [tuple(t["ticket"]) for t in ensemble.generate_genius_tickets(
+        meta, history, cfg, count=40, seed=seed)]
+    seed_pop += [searcher.random_combo() for _ in range(40)]
+    evolved = searcher.evolve(seed_pop, fitness, generations=12, elite=12)
+    sampled = [tuple(t["ticket"]) for t in ensemble.generate_genius_tickets(
+        meta, history, cfg, count=max(60, size * 8), seed=seed + 1)]
+    pool = list(dict.fromkeys(list(evolved[:80]) + sampled))
+    evolved_set = set(evolved[:80])
+    cands = [pf.Candidate(tuple(c), fitness(c),
+                          "evolutionary" if tuple(c) in evolved_set else "sampled")
+             for c in pool]
+    chosen = engine_pf.diversify(cands, size=size, overlap_limit=overlap_limit)
+    checked = risk_agent.validate([list(c.numbers) for c in chosen], cfg)
+    return {
+        "game_type": game_type,
+        "tickets": [c.as_dict() for c in chosen],
+        "coverage": engine_pf.coverage(chosen),
+        "risk_filter": {k: v for k, v in checked.items() if k != "accepted"},
+        "monte_carlo": pf.monte_carlo_hits(cfg, universes=8000, seed=seed,
+                                           tickets=[list(c.numbers) for c in chosen]),
+        "disclaimer": ("Estos son CANDIDATOS, no garantías. La optimización no aumenta "
+                       "la probabilidad matemática de ganar: reparte la misma "
+                       "probabilidad entre más resultados distintos."),
+    }
+
+
+@router.get("/edge")
+def edge_status(game_type: str, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    """NO_EDGE or EDGE_CANDIDATE, from the last recorded evidence."""
+    if game_type not in GAME_KEYS:
+        raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
+    rows = (db.query(ModelCard)
+            .filter(ModelCard.game_type == game_type)
+            .order_by(ModelCard.created_at.desc(), ModelCard.id.desc())
+            .limit(30).all())
+    evidence = [{
+        "model": r.model_name,
+        "q_value": r.bh_q if r.bh_q is not None else 1.0,
+        "permutation_p": r.permutation_p if r.permutation_p is not None else 1.0,
+        "golden_holdout_delta": ((r.golden_holdout_score or 0.0) - (r.random_baseline or 0.0))
+        if r.golden_holdout_score is not None else 0.0,
+        "replicated": bool(r.replication_passed),
+        "base_rate_warning": bool(r.looks_like_base_rate),
+        "score": r.observed_delta or 0.0,
+    } for r in rows]
+    result = pf.evaluate_edge(evidence)
+    result["evidence_source"] = "model_cards"
+    return result
+
+
+@router.get("/memory")
+def memory(game_type: str | None = None, limit: int = 40,
+           db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Research Memory 2.0 — which questions were already asked, and how often."""
+    return {"summary": rmem.summary(db, game_type),
+            "items": rmem.listing(db, game_type, limit),
+            "note": ("Repetir una hipótesis equivalente no aporta evidencia nueva: "
+                     "solo añade otra oportunidad de que el azar produzca un "
+                     "resultado llamativo.")}
 
 
 @router.get("/model-cards")

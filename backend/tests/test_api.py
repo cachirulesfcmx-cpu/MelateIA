@@ -2,6 +2,7 @@
 
 Runs against a temporary SQLite database seeded from the bundled CSVs.
 """
+import math
 import os
 import tempfile
 
@@ -381,9 +382,9 @@ def test_constitution_endpoint(client):
     c = client.get("/api/research/constitution", headers=uh)
     assert c.status_code == 200
     body = c.json()
-    assert len(body["rules"]) == 15          # 10 originales + 5 del protocolo v3
+    assert len(body["rules"]) == 23          # 10 + 5 (v3) + 8 (v7)
     ids = [r["id"] for r in body["rules"]]
-    assert ids == list(range(1, 16))
+    assert ids == list(range(1, 24))
     # rule 10 — the system is allowed to conclude there is no evidence
     assert "no existe evidencia" in body["rules"][9]["rule"].lower()
     th = body["thresholds"]
@@ -465,7 +466,7 @@ def test_research_cycle_runs_and_is_honest(client):
     assert accepted_flags == sorted(accepted_flags, reverse=True)
     # the run audits itself against the constitution
     assert run["constitution"]["compliant"] is True
-    assert len(run["constitution"]["checks"]) == 15
+    assert len(run["constitution"]["checks"]) == 23
 
     # the record is queryable, and rejected hypotheses are kept (rule 7)
     hyps = client.get("/api/research/hypotheses?game_type=melate", headers=uh).json()
@@ -604,14 +605,14 @@ def test_research_cycle_v3_protocol(client):
     assert p["version"] == "v3" and len(p["pre_registered_hypotheses"]) == 7
 
     c = client.get("/api/research/constitution", headers=uh).json()
-    assert len(c["rules"]) == 15                     # 10 originales + 5 de v3
+    assert len(c["rules"]) == 23                     # 10 + 5 (v3) + 8 (v7)
     assert c["thresholds"]["correction"].startswith("Benjamini")
 
     r = client.post("/api/research/run?game_type=melate&windows=2&window_size=12"
                     "&permutations=5&perm_window=6", headers=ah)
     assert r.status_code == 200, r.text
     run = r.json()
-    assert run["status"] == "ok" and run["protocol_version"] == "v4"
+    assert run["status"] == "ok" and run["protocol_version"] == "v7"
 
     # point 7 — golden holdout is locked and excluded from selection
     gh = run["golden_holdout"]
@@ -646,7 +647,7 @@ def test_research_cycle_v3_protocol(client):
     assert run["pipeline"][0] == "api gateway"   # v4 antepone el gateway
 
     # the constitution now audits 15 rules and still passes
-    assert len(run["constitution"]["checks"]) == 15
+    assert len(run["constitution"]["checks"]) == 23
     assert run["constitution"]["compliant"] is True
 
 
@@ -801,7 +802,7 @@ def test_v4_architecture_and_cycle(client):
                     "&permutations=4&perm_window=6", headers=ah)
     assert r.status_code == 200, r.text
     run = r.json()
-    assert run["protocol_version"] == "v4"
+    assert run["protocol_version"] == "v7"
     assert run["architecture"]["gates"][-1] == "confirmation_queue"
 
     labs = run["labs"]
@@ -1081,3 +1082,178 @@ def test_v6_model_cards(client):
     cards = client.get("/api/research/model-cards?game_type=melate_retro", headers=uh).json()
     assert any(c["model"] == "worker_transformer" and c["stability_verdict"] == "inestable"
                for c in cards["items"])
+
+
+def test_v7_monte_carlo_fixed(client):
+    """The package's simulate() never simulated hits; this one matches theory."""
+    from app.engine.portfolio import monte_carlo_hits
+    from app.engine.game_config import get_game
+
+    cfg = get_game("melate")
+    mc = monte_carlo_hits(cfg, universes=20000, seed=3)
+    # the broken version always returned pick (6.0) because it counted len(set(sample))
+    assert mc["mean_hits"] != cfg.pick
+    assert abs(mc["mean_hits"] - mc["exact_mean_hits"]) < 0.03
+    # and the simulated distribution tracks the exact hypergeometric one
+    for h in ("0", "1", "2", "3"):
+        assert abs(mc["share"][h] - mc["exact_reference"][h]) < 0.02, h
+    assert sum(mc["distribution"].values()) == 20000
+    # a different game has a different reference
+    retro = monte_carlo_hits(get_game("melate_retro"), universes=5000, seed=3)
+    assert abs(retro["exact_mean_hits"] - 36 / 39) < 1e-3
+
+
+def test_v7_portfolio_is_coverage_not_luck(client):
+    """A portfolio buys coverage; the response must never claim better odds."""
+    import random as _r
+    from app.engine.portfolio import Candidate, PortfolioEngine
+    from app.engine.game_config import get_game
+
+    cfg = get_game("melate")
+    pe = PortfolioEngine(cfg)
+    assert pe.validate([1, 2, 3, 4, 5, 6]) is True
+    assert pe.validate([1, 2, 3, 4, 5]) is False          # too few
+    assert pe.validate([1, 1, 3, 4, 5, 6]) is False       # duplicate collapses
+    assert pe.validate([1, 2, 3, 4, 5, 99]) is False      # out of range
+
+    rng = _r.Random(5)
+    cands = [Candidate(tuple(sorted(rng.sample(range(1, 57), 6))), rng.random(), "t")
+             for _ in range(400)]
+    port = pe.diversify(cands, size=10, overlap_limit=2)
+    assert len(port) == 10
+    # the overlap limit is respected between every pair
+    for i, a in enumerate(port):
+        for b in port[i + 1:]:
+            assert len(set(a.numbers) & set(b.numbers)) <= 2
+    # ...and ordering is by score
+    assert port[0].score >= port[-1].score
+
+    cov = pe.coverage(port)
+    assert cov["tickets"] == 10 and cov["max_overlap"] <= 2
+    # 10 distinct tickets = exactly 10x the single-ticket odds, nothing more
+    assert cov["jackpot_odds_one_in"] == round(math.comb(56, 6) / 10)
+    assert "cobertura, no suerte" in cov["note"]
+
+
+def test_v7_no_edge_and_dynamic_ensemble(client):
+    """NO_EDGE names the strongest model, and confidence comes from evidence."""
+    from app.engine.portfolio import DynamicEnsemble, ModelEvidence, evaluate_edge
+
+    # nothing passes → NO_EDGE, and the failing gates are counted
+    nothing = evaluate_edge([{"model": "a", "q_value": 0.9, "permutation_p": 0.9,
+                              "golden_holdout_delta": -0.1, "replicated": False}])
+    assert nothing["mode"] == "NO_EDGE" and nothing["champion"] is None
+    assert nothing["failed_by_gate"]["q_value"] == 1
+
+    # a base-rate model never qualifies, however good its numbers look
+    fake = evaluate_edge([{"model": "flat", "q_value": 0.001, "permutation_p": 0.001,
+                           "golden_holdout_delta": 0.9, "replicated": True,
+                           "base_rate_warning": True}])
+    assert fake["mode"] == "NO_EDGE"
+
+    # with two qualifying models the STRONGEST is champion (package took the first)
+    two = evaluate_edge([
+        {"model": "weak", "q_value": 0.01, "permutation_p": 0.01,
+         "golden_holdout_delta": 0.05, "replicated": True, "score": 0.1},
+        {"model": "strong", "q_value": 0.001, "permutation_p": 0.001,
+         "golden_holdout_delta": 0.30, "replicated": True, "score": 0.9},
+    ])
+    assert two["mode"] == "EDGE_CANDIDATE" and two["champion"] == "strong"
+    assert two["confidence"] == "RESEARCH_ONLY"    # never "you will win"
+
+    de = DynamicEnsemble()
+    # nothing qualifies → every weight is zero (rule 19)
+    none_ok = [ModelEvidence("a", 0.5, 0.9, 0.9), ModelEvidence("b", 0.4, 0.2, 0.01)]
+    assert de.weights(none_ok) == {"a": 0.0, "b": 0.0}
+    assert de.confidence(none_ok)["level"] == "NONE"
+
+    # one weak qualifier must NOT read as HIGH (the package always said HIGH,
+    # because normalized weights sum to 1 whenever anything qualifies)
+    weak = [ModelEvidence("a", 0.5, 0.9, 0.01)]
+    assert abs(sum(de.weights(weak).values()) - 1.0) < 1e-9
+    assert de.confidence(weak)["level"] == "LOW"
+
+    strong = [ModelEvidence("a", 0.5, 0.9, 0.01, permutation_p=0.01,
+                            golden_holdout_delta=0.2, replicated=True),
+              ModelEvidence("b", 0.4, 0.8, 0.02, permutation_p=0.02,
+                            golden_holdout_delta=0.1, replicated=True)]
+    assert de.confidence(strong)["level"] == "HIGH"
+
+
+def test_v7_research_memory_persists(client):
+    """Memory survives across calls, so an equivalent hypothesis is recognised."""
+    from app.database import SessionLocal
+    from app.engine import research_memory as rmem
+
+    db = SessionLocal()
+    try:
+        h = "Dependencia temporal no lineal"
+        params = {"window": 40}
+        assert rmem.seen_equivalent(db, "chispazo", h, params) is False
+        first = rmem.remember(db, "chispazo", h, params, {"verdict": "descartada"})
+        assert first["new"] is True and first["times_seen"] == 1
+        assert rmem.seen_equivalent(db, "chispazo", h, params) is True
+
+        # same question, different capitalisation → same fingerprint
+        again = rmem.remember(db, "chispazo", h.upper(), params)
+        assert again["new"] is False and again["times_seen"] == 2
+        # different params → a genuinely different experiment
+        other = rmem.remember(db, "chispazo", h, {"window": 80})
+        assert other["new"] is True
+
+        split = rmem.filter_new(db, "chispazo", [h, "Una hipótesis nunca vista"], params)
+        assert h in split["already_asked"]
+        assert "Una hipótesis nunca vista" in split["new"]
+
+        s = rmem.summary(db, "chispazo")
+        assert s["experiments"] >= 2 and s["repeated_attempts"] >= 1
+    finally:
+        db.close()
+
+
+def test_v7_cycle_and_endpoints(client):
+    """The v7 cycle reports NO_EDGE, a portfolio, and 23 audited rules."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+
+    c = client.get("/api/research/constitution", headers=uh).json()
+    assert len(c["rules"]) == 23
+    assert [r["id"] for r in c["rules"]] == list(range(1, 24))
+    assert "no se presenta como más probable" in c["rules"][15]["rule"]
+
+    r = client.post("/api/research/run?game_type=melate&windows=2&window_size=12"
+                    "&permutations=0&include_ml_lab=false", headers=ah)
+    assert r.status_code == 200, r.text
+    run = r.json()
+    assert run["protocol_version"] == "v7"
+    assert run["edge"]["mode"] in ("NO_EDGE", "EDGE_CANDIDATE")
+    assert run["dynamic_ensemble"]["confidence"]["level"] in ("NONE", "LOW", "MEDIUM", "HIGH")
+    # nothing qualified → every ensemble weight is zero
+    if not run["dynamic_ensemble"]["qualified"]:
+        assert all(v == 0.0 for v in run["dynamic_ensemble"]["weights"].values())
+    assert run["monte_carlo"]["exact_reference"]
+    assert run["portfolio"]["tickets"]
+    assert run["claims_higher_probability"] is False
+    assert run["claims_guarantee"] is False
+    assert len(run["constitution"]["checks"]) == 23
+    assert run["constitution"]["compliant"] is True
+    # memory recorded the cycle's hypotheses
+    assert run["research_memory"].get("experiments", 0) >= 1
+
+    # endpoints
+    pf_resp = client.get("/api/research/portfolio?game_type=melate&size=8", headers=uh)
+    assert pf_resp.status_code == 200
+    body = pf_resp.json()
+    assert 1 <= len(body["tickets"]) <= 8
+    assert "no aumenta la probabilidad" in body["disclaimer"]
+    for t in body["tickets"]:
+        assert len(set(t["numbers"])) == 6 and all(1 <= n <= 56 for n in t["numbers"])
+
+    edge = client.get("/api/research/edge?game_type=melate", headers=uh).json()
+    assert edge["mode"] in ("NO_EDGE", "EDGE_CANDIDATE")
+
+    mem = client.get("/api/research/memory?game_type=melate", headers=uh).json()
+    assert mem["summary"]["experiments"] >= 1
+
+    # Tris is positional: the portfolio does not apply
+    assert client.get("/api/research/portfolio?game_type=tris", headers=uh).status_code == 400

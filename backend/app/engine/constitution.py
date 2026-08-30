@@ -43,6 +43,23 @@ RULES: list[dict] = [
      "detail": "El 10% cronológico final, identificado por SHA-256, solo se usa para evaluar un candidato ya congelado."},
     {"id": 15, "rule": "El LLM no escribe predicciones ni altera la base.",
      "detail": "El asistente explica; el motor calcula. Ningún texto generado modifica datos ni pesos."},
+    # --- Protocol v7 additions ---
+    {"id": 16, "rule": "El portafolio no se presenta como más probable de ganar por optimización.",
+     "detail": "Diversificar reparte la misma probabilidad entre más resultados: compra cobertura, no suerte."},
+    {"id": 17, "rule": "La búsqueda evolutiva no accede al Golden Holdout.",
+     "detail": "Su función de aptitud se construye solo con los datos de selección."},
+    {"id": 18, "rule": "Monte Carlo estima distribuciones, no causalidad.",
+     "detail": "Se contrasta contra la hipergeométrica exacta para no confundir ruido de simulación con hallazgo."},
+    {"id": 19, "rule": "El ensemble solo pondera modelos que pasan las compuertas.",
+     "detail": "Un modelo que no supera q, estabilidad y aviso de tasa base recibe peso cero."},
+    {"id": 20, "rule": "Si ninguno pasa, NO_EDGE.",
+     "detail": "El sistema declara la ausencia de ventaja en vez de nombrar un campeón por descarte."},
+    {"id": 21, "rule": "El LLM no modifica alfa, BH, permutación, holdout ni Champion Gate.",
+     "detail": "Restricción implementada como validador de acciones, no como promesa en un documento."},
+    {"id": 22, "rule": "Research Memory evita repetir hipótesis equivalentes.",
+     "detail": "Huella SHA-256 de (juego, hipótesis, parámetros) persistida en base de datos."},
+    {"id": 23, "rule": "Las combinaciones son candidatos, nunca garantías.",
+     "detail": "Ninguna salida de la app promete premio ni ventaja matemática."},
 ]
 
 # A challenger must beat the random baseline by at least this many mean hits
@@ -137,6 +154,38 @@ def check_compliance(run: dict) -> dict:
            if gh.get("evaluated") else "no se tocó en este ciclo."))
     add(15, run.get("llm_wrote_predictions") is False,
         "Ninguna predicción ni peso provino de texto generado por el LLM.")
+
+    # --- Protocol v7 checks ---
+    portfolio = run.get("portfolio") or {}
+    cov = portfolio.get("coverage") or {}
+    add(16, bool(cov.get("note")) and run.get("claims_higher_probability") is False,
+        f"{cov.get('tickets', 0)} boletos con {cov.get('coverage_share', 0)} de cobertura, "
+        f"declarados como cobertura y no como mayor probabilidad.")
+    add(17, run.get("evolution_saw_golden_holdout") is False,
+        "La búsqueda evolutiva se ejecutó solo sobre los datos de selección.")
+    mc = run.get("monte_carlo") or {}
+    add(18, bool(mc.get("exact_reference")),
+        f"Simulación de {mc.get('universes', 0)} universos contrastada contra la "
+        f"hipergeométrica exacta (media {mc.get('mean_hits')} vs {mc.get('exact_mean_hits')}).")
+    ens = run.get("dynamic_ensemble") or {}
+    weights = ens.get("weights") or {}
+    unqualified_weighted = [k for k, v in weights.items()
+                            if v > 0 and k not in (ens.get("qualified") or [])]
+    add(19, not unqualified_weighted,
+        f"{len(ens.get('qualified') or [])} modelo(s) con peso; el resto en cero.")
+    edge = run.get("edge") or {}
+    add(20, edge.get("mode") in ("NO_EDGE", "EDGE_CANDIDATE"),
+        f"Modo declarado: {edge.get('mode')} ({edge.get('qualified_models', 0)} modelos calificados).")
+    add(21, run.get("llm_changed_gates") is False,
+        "Ninguna compuerta estadística fue modificada por el agente.")
+    mem = run.get("research_memory") or {}
+    add(22, ("experiments" in mem) or (mem.get("available") is False),
+        (f"{mem.get('experiments', 0)} experimentos en memoria; "
+         f"{mem.get('repeated_attempts', 0)} hipótesis se detectaron como repetidas."
+         if "experiments" in mem else
+         "Ciclo sin persistencia: la memoria no aplica en una corrida en seco."))
+    add(23, run.get("claims_guarantee") is False,
+        "Las combinaciones se entregan como candidatos, sin promesa de premio.")
 
     return {
         "compliant": all(c["ok"] for c in checks),

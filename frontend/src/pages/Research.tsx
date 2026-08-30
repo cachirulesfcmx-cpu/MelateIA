@@ -4,7 +4,8 @@ import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import { useGames } from "../hooks";
 import { GameSelector } from "../components/GameSelector";
-import { GlassCard, GlassButton, SectionTitle, Spinner } from "../components/ui";
+import { GlassCard, GlassButton, SectionTitle, Spinner, gameTheme } from "../components/ui";
+import { NumberBall } from "../components/NumberBall";
 import { getDefaultGame } from "../settings";
 
 type Rule = { id: number; rule: string; detail: string };
@@ -104,6 +105,21 @@ type WorkerChallengers = {
   items: { game_type: string; model_name: string; version: string; role: string;
            edge_vs_random: number; metrics: Record<string, unknown> }[];
 };
+type Portfolio = {
+  tickets: { numbers: number[]; score: number; source: string }[];
+  coverage: {
+    tickets: number; distinct_numbers: number; coverage_share: number;
+    mean_overlap: number; max_overlap: number; jackpot_odds_one_in: number;
+    expected_hits_per_ticket: number; note: string;
+  };
+  monte_carlo: { universes: number; mean_hits: number; exact_mean_hits: number };
+  disclaimer: string;
+};
+type EdgeStatus = {
+  mode: string; champion: string | null; qualified_models: number;
+  evaluated_models: number; message: string;
+  failed_by_gate?: Record<string, number>;
+};
 type Champion = {
   champion: null | { model_name: string; score: number; baseline_score: number; edge_vs_random: number; windows: number };
   note: string | null;
@@ -125,12 +141,16 @@ export default function Research() {
   const [hyps, setHyps] = useState<Hypothesis[]>([]);
   const [champ, setChamp] = useState<Champion | null>(null);
   const [running, setRunning] = useState(false);
-  const [tab, setTab] = useState<"ciclo" | "arquitectura" | "hipotesis" | "reglas">("ciclo");
+  const [tab, setTab] = useState<"ciclo" | "portafolio" | "arquitectura" | "hipotesis" | "reglas">("ciclo");
   const [arch, setArch] = useState<Architecture | null>(null);
   const [queue, setQueue] = useState<Queue | null>(null);
   const [workers, setWorkers] = useState<WorkerChallengers | null>(null);
+  const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
+  const [edge, setEdge] = useState<EdgeStatus | null>(null);
+  const [loadingPf, setLoadingPf] = useState(false);
 
   const combinationGames = games.filter((g) => g.kind !== "positional");
+  const theme = gameTheme(game);
 
   useEffect(() => {
     api.get<Constitution>("/research/constitution").then(setConstitution).catch(() => {});
@@ -142,7 +162,20 @@ export default function Research() {
     api.get<Champion>(`/research/champion?game_type=${game}`).then(setChamp).catch(() => setChamp(null));
     api.get<Queue>(`/research/queue?game_type=${game}`).then(setQueue).catch(() => setQueue(null));
     api.get<WorkerChallengers>(`/research/worker-challengers?game_type=${game}`).then(setWorkers).catch(() => setWorkers(null));
+    api.get<EdgeStatus>(`/research/edge?game_type=${game}`).then(setEdge).catch(() => setEdge(null));
+    setPortfolio(null);
   }, [game]);
+
+  async function loadPortfolio() {
+    setLoadingPf(true);
+    try {
+      setPortfolio(await api.get<Portfolio>(`/research/portfolio?game_type=${game}&size=10`));
+    } catch (err) {
+      notify((err as Error).message, "error");
+    } finally {
+      setLoadingPf(false);
+    }
+  }
 
   async function launch() {
     setRunning(true);
@@ -174,7 +207,7 @@ export default function Research() {
       <GameSelector games={combinationGames} value={game} onChange={setGame} />
 
       <div className="flex gap-2">
-        {(["ciclo", "arquitectura", "hipotesis", "reglas"] as const).map((t) => (
+        {(["ciclo", "portafolio", "arquitectura", "hipotesis", "reglas"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -182,7 +215,7 @@ export default function Research() {
               tab === t ? "bg-white/15 text-white" : "bg-white/[0.05] text-white/50"
             }`}
           >
-            {t === "ciclo" ? "Ciclo" : t === "arquitectura" ? "Arquitectura" : t === "hipotesis" ? "Hipótesis" : "Constitución"}
+            {t === "ciclo" ? "Ciclo" : t === "portafolio" ? "Portafolio" : t === "arquitectura" ? "Arquitectura" : t === "hipotesis" ? "Hipótesis" : "Constitución"}
           </button>
         ))}
       </div>
@@ -511,6 +544,100 @@ export default function Research() {
             <GlassCard className="!p-3">
               <p className="text-xs text-white/70">{run.message}</p>
             </GlassCard>
+          )}
+        </div>
+      )}
+
+      {tab === "portafolio" && (
+        <div className="space-y-3">
+          {edge && (
+            <GlassCard
+              className={`!p-4 border ${
+                edge.mode === "NO_EDGE"
+                  ? "text-rose-300 border-rose-400/30 bg-rose-500/10"
+                  : "text-emerald-300 border-emerald-400/30 bg-emerald-500/10"
+              }`}
+            >
+              <p className="text-[11px] uppercase tracking-wide opacity-70 mb-1">Modo</p>
+              <p className="font-bold text-base mb-1">{edge.mode}</p>
+              <p className="text-xs text-white/70 leading-relaxed">{edge.message}</p>
+              {edge.failed_by_gate && Object.keys(edge.failed_by_gate).length > 0 && (
+                <p className="text-[10px] text-white/45 mt-2 tnum">
+                  {Object.entries(edge.failed_by_gate)
+                    .map(([k, v]) => `${k}: ${v}`)
+                    .join(" · ")}
+                </p>
+              )}
+            </GlassCard>
+          )}
+
+          <GlassButton full size="lg" onClick={loadPortfolio} disabled={loadingPf}>
+            {loadingPf ? "Construyendo…" : "🎟 Generar portafolio diversificado"}
+          </GlassButton>
+
+          {loadingPf && <Spinner label="Búsqueda evolutiva + filtro de diversidad…" />}
+
+          {portfolio && (
+            <>
+              <GlassCard className="!p-3 border border-amber-400/25 bg-amber-500/[0.07]">
+                <p className="text-xs text-amber-200/90 leading-relaxed">{portfolio.disclaimer}</p>
+              </GlassCard>
+
+              <GlassCard className="!p-3">
+                <p className="text-[11px] text-white/40 uppercase tracking-wide mb-2">
+                  Qué compra el portafolio
+                </p>
+                <div className="grid grid-cols-3 gap-2 text-center mb-2">
+                  <div>
+                    <p className="text-lg font-bold tnum">{portfolio.coverage.distinct_numbers}</p>
+                    <p className="text-[10px] text-white/40">números cubiertos</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold tnum">{portfolio.coverage.mean_overlap}</p>
+                    <p className="text-[10px] text-white/40">solape medio</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold tnum">
+                      {portfolio.coverage.expected_hits_per_ticket}
+                    </p>
+                    <p className="text-[10px] text-white/40">aciertos esperados</p>
+                  </div>
+                </div>
+                <p className="text-xs text-white/70 tnum">
+                  Premio mayor: 1 en {portfolio.coverage.jackpot_odds_one_in.toLocaleString("es-MX")}
+                </p>
+                <p className="text-[10px] text-white/45 mt-2 leading-relaxed">
+                  {portfolio.coverage.note}
+                </p>
+              </GlassCard>
+
+              <div className="space-y-2">
+                {portfolio.tickets.map((t, i) => (
+                  <GlassCard key={i} className="!p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] text-white/35">#{i + 1} · {t.source}</span>
+                      <span className="text-[10px] text-white/35 tnum">score {t.score}</span>
+                    </div>
+                    <div className="flex gap-1.5 flex-wrap">
+                      {t.numbers.map((n, j) => (
+                        <NumberBall key={j} n={n} size="sm" grad={theme.grad} index={j} />
+                      ))}
+                    </div>
+                  </GlassCard>
+                ))}
+              </div>
+
+              <GlassCard className="!p-3">
+                <p className="text-[11px] text-white/40 uppercase tracking-wide mb-1">
+                  Monte Carlo del portafolio
+                </p>
+                <p className="text-xs text-white/70 tnum">
+                  {portfolio.monte_carlo.universes.toLocaleString("es-MX")} universos simulados:{" "}
+                  {portfolio.monte_carlo.mean_hits} aciertos medios frente a{" "}
+                  {portfolio.monte_carlo.exact_mean_hits} de la hipergeométrica exacta.
+                </p>
+              </GlassCard>
+            </>
           )}
         </div>
       )}

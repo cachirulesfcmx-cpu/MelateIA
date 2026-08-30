@@ -29,6 +29,8 @@ from . import ensemble
 from . import research_lab as rlab
 from . import confirmation as cqueue
 from . import model_cards
+from . import portfolio as pf
+from . import research_memory as rmem
 from .autonomous_cycle import (STATES as CYCLE_STATES, generate_hypotheses,
                                replication_gate)
 from .labs import ClassicalMLLab, DeepLearningLab, QuantumLab, StatisticalLab
@@ -715,6 +717,93 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
         "pre_registered_results": {c: ok for c, (ok, _) in prereg_results.items()},
         "llm_wrote_predictions": False,
     }
+    # ---------------- v7: portfolio, Monte Carlo, ensemble, NO_EDGE ----------
+    evidence = []
+    for r in results:
+        perm_p = ((permutation_block or {}).get(r["model_name"]) or {}).get("p_value", 1.0)
+        gd = 0.0
+        if golden_eval and golden_eval.get("model_name") == r["model_name"]:
+            gd = golden_eval.get("edge_vs_random", 0.0)
+        stability = (r["windows_won"] / max(1, len(bounds)))
+        evidence.append(pf.ModelEvidence(
+            name=r["model_name"], score=max(0.0, r["edge_vs_random"]),
+            stability=stability, q_value=r.get("q_value", 1.0),
+            permutation_p=perm_p, golden_holdout_delta=gd,
+            replicated=bool((queue_state or {}).get("ready_to_promote")
+                            and (queue_state or {}).get("model_name") == r["model_name"]),
+            base_rate_warning=bool(r["metrics"]["mean_hits"] <= baseline["mean_hits"]),
+        ))
+    dyn = pf.DynamicEnsemble()
+    ens_weights = dyn.weights(evidence)
+    ens_block = {
+        "weights": ens_weights,
+        "qualified": [e.name for e in dyn.qualified(evidence)],
+        "confidence": dyn.confidence(evidence),
+    }
+    edge = pf.evaluate_edge([e.as_dict() for e in evidence])
+
+    # Candidate portfolio: evolutionary search over the meta distribution,
+    # scored ONLY with selection data — the Golden Holdout is never consulted.
+    portfolio_block = None
+    try:
+        engine_pf = pf.PortfolioEngine(cfg)
+        info_p = ensemble.compute_weights(selection, cfg)
+        fused_p = ensemble.fused_probabilities(selection, cfg, weights=info_p["weights"])
+        meta_p = ensemble.meta_probabilities(selection, cfg, fused_p)
+        searcher = pf.EvolutionarySearch(cfg, seed=seed)
+        seed_pop = [tuple(t["ticket"]) for t in ensemble.generate_genius_tickets(
+            meta_p, selection, cfg, count=40, seed=seed)]
+        seed_pop += [searcher.random_combo() for _ in range(40)]
+        fitness = lambda c: sum(meta_p.get(n, 0.0) for n in c)
+        evolved = searcher.evolve(seed_pop, fitness, generations=12, elite=12)
+        # Evolutionary search converges on look-alike tickets, so the pool is
+        # topped up with sampled ones: the diversity filter needs real choice
+        # or the portfolio collapses onto a handful of near-identical plays.
+        sampled = [tuple(t["ticket"]) for t in ensemble.generate_genius_tickets(
+            meta_p, selection, cfg, count=60, seed=seed + 1)]
+        pool = list(dict.fromkeys(list(evolved[:80]) + sampled))
+        cands = [pf.Candidate(tuple(c), fitness(c),
+                              "evolutionary" if tuple(c) in set(evolved[:80]) else "sampled")
+                 for c in pool]
+        chosen = engine_pf.diversify(cands, size=10, overlap_limit=3)
+        checked = risk.validate([list(c.numbers) for c in chosen], cfg)
+        portfolio_block = {
+            "tickets": [c.as_dict() for c in chosen],
+            "coverage": engine_pf.coverage(chosen),
+            "risk_filter": {k: v for k, v in checked.items() if k != "accepted"},
+            "source": "búsqueda evolutiva sobre la distribución de selección",
+        }
+    except Exception as exc:
+        portfolio_block = {"error": str(exc)}
+
+    monte = pf.monte_carlo_hits(cfg, universes=15000, seed=seed)
+
+    memory_block = {"available": False, "reason": "ciclo sin persistencia"}
+    if persist:
+        try:
+            catalog = generate_hypotheses([])
+            memory_block = rmem.filter_new(db, cfg.key, catalog, {"run": "cycle"})
+            for h in memory_block.get("new", []):
+                rmem.remember(db, cfg.key, h, {"run": "cycle"},
+                              {"verdict": verdict, "run_id": run_id})
+            memory_block.update(rmem.summary(db, cfg.key))
+        except Exception as exc:
+            memory_block = {"error": str(exc)}
+
+    run.update({
+        "protocol_version": "v7",
+        "portfolio": portfolio_block,
+        "monte_carlo": monte,
+        "dynamic_ensemble": ens_block,
+        "edge": edge,
+        "research_memory": memory_block,
+        # constitution v7 evidence
+        "claims_higher_probability": False,
+        "claims_guarantee": False,
+        "evolution_saw_golden_holdout": False,
+        "llm_changed_gates": False,
+    })
+
     run["constitution"] = check_compliance(run)
 
     # v6 — MODEL CARDS: provenance for the arms that mattered in this cycle
