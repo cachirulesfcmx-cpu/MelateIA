@@ -375,6 +375,238 @@ def run_diagnostics(draws: list, max_number: int) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# v4 STATISTICAL LAB — mutual information, change point, drift, block bootstrap
+# --------------------------------------------------------------------------- #
+def _entropy(counts: list[int], total: int) -> float:
+    h = 0.0
+    for c in counts:
+        if c > 0:
+            p = c / total
+            h -= p * math.log(p)
+    return h
+
+
+def _mi_from_matrix(x, max_number: int) -> list[tuple[int, int, float, int]]:
+    """Pairwise mutual information from a 0/1 presence matrix (n x max_number)."""
+    n = x.shape[0]
+    co = x.T @ x                      # n11 for every pair
+    ca = x.sum(axis=0)                # marginal per number
+    out = []
+    for a in range(max_number):
+        for b in range(a + 1, max_number):
+            n11 = co[a, b]
+            n10 = ca[a] - n11
+            n01 = ca[b] - n11
+            n00 = n - n11 - n10 - n01
+            mi = 0.0
+            for nij, ni, nj in ((n11, ca[a], ca[b]), (n10, ca[a], n - ca[b]),
+                                (n01, n - ca[a], ca[b]), (n00, n - ca[a], n - ca[b])):
+                if nij > 0 and ni > 0 and nj > 0:
+                    mi += (nij / n) * math.log((nij * n) / (ni * nj))
+            out.append((a + 1, b + 1, float(mi), int(n11)))
+    return out
+
+
+def mutual_information_pairs(draws: list, max_number: int, top_k: int = 10) -> list[dict]:
+    """Mutual information between the presence of each pair of numbers.
+
+    MI is zero when two numbers appear independently. In a fair draw every pair
+    sits at the level produced by finite-sample noise.
+    """
+    n = len(draws)
+    if n < 50:
+        return []
+    if HAS_NUMPY:
+        x = np.zeros((n, max_number), dtype=np.float64)
+        for i, d in enumerate(draws):
+            for num in d:
+                if 1 <= num <= max_number:
+                    x[i, num - 1] = 1.0
+        rows = _mi_from_matrix(x, max_number)
+    else:  # pragma: no cover
+        present = [set(d) for d in draws]
+        counts = {num: sum(1 for s in present if num in s) for num in range(1, max_number + 1)}
+        rows = []
+        for a in range(1, max_number + 1):
+            for b in range(a + 1, max_number + 1):
+                n11 = sum(1 for s in present if a in s and b in s)
+                n10, n01 = counts[a] - n11, counts[b] - n11
+                n00 = n - n11 - n10 - n01
+                mi = 0.0
+                for nij, ni, nj in ((n11, counts[a], counts[b]), (n10, counts[a], n - counts[b]),
+                                    (n01, n - counts[a], counts[b]), (n00, n - counts[a], n - counts[b])):
+                    if nij > 0 and ni > 0 and nj > 0:
+                        mi += (nij / n) * math.log((nij * n) / (ni * nj))
+                rows.append((a, b, mi, n11))
+    rows.sort(key=lambda r: r[2], reverse=True)
+    return [{"a": a, "b": b, "mi": round(mi, 6), "together": c} for a, b, mi, c in rows[:top_k]]
+
+
+MIN_NULL_REPS = 20
+
+
+def max_mi_null(draws: list, max_number: int, reps: int = 30, seed: int = 42) -> dict:
+    """Empirical null for the LARGEST mutual information across all pairs.
+
+    The asymptotic chi-square approximation is unreliable here: the ~1,500 pairs
+    are not independent and the 2x2 tables are heavily unbalanced, so it flags
+    noise as signal. Shuffling each number's presence series independently
+    destroys any dependence BETWEEN numbers while preserving how often each one
+    appears, giving a calibrated threshold for "the luckiest pair".
+    """
+    n = len(draws)
+    if not HAS_NUMPY or n < 50:
+        return {"available": False, "reps": 0}
+    x = np.zeros((n, max_number), dtype=np.float64)
+    for i, d in enumerate(draws):
+        for num in d:
+            if 1 <= num <= max_number:
+                x[i, num - 1] = 1.0
+    rng = np.random.default_rng(seed)
+    maxima = []
+    for _ in range(reps):
+        shuffled = np.empty_like(x)
+        for j in range(max_number):
+            shuffled[:, j] = rng.permutation(x[:, j])
+        maxima.append(float(max(r[2] for r in _mi_from_matrix(shuffled, max_number))))
+    maxima.sort()
+    return {
+        "available": True, "reps": reps, "enough_reps": reps >= MIN_NULL_REPS,
+        "null_max_mean": round(sum(maxima) / len(maxima), 6),
+        "null_max_p95": round(maxima[min(len(maxima) - 1, int(0.95 * len(maxima)))], 6),
+        "null_max_observed_range": [round(maxima[0], 6), round(maxima[-1], 6)],
+    }
+
+
+def mi_noise_reference(n_draws: int) -> float:
+    """Expected MI magnitude from finite-sample noise alone (~ df / (2n))."""
+    return 1.0 / (2.0 * n_draws) if n_draws else 0.0
+
+
+def mi_significance(top_mi: list[dict], n_draws: int, max_number: int,
+                    null: dict | None = None) -> dict:
+    """Is the strongest mutual information beyond what noise alone produces?
+
+    Decided against the EMPIRICAL null of the maximum (`max_mi_null`) when it is
+    available: the asymptotic chi-square would flag the luckiest of ~1,500
+    correlated pairs on purely random data. The chi-square figure is still
+    reported, but it does not decide.
+    """
+    n_pairs = max_number * (max_number - 1) // 2
+    if not top_mi or n_draws <= 0:
+        return {"tested_pairs": n_pairs, "significant": False}
+    top = top_mi[0]
+    g = 2.0 * n_draws * top["mi"]
+    p_raw = math.erfc(math.sqrt(max(g, 0.0) / 2.0))   # chi2, 1 df — reference only
+    out = {
+        "a": top["a"], "b": top["b"], "mi": top["mi"], "g_statistic": round(g, 3),
+        "p_chi2_bonferroni": round(min(1.0, p_raw * n_pairs), 6),
+        "tested_pairs": n_pairs,
+        "noise_reference_single_pair": round(mi_noise_reference(n_draws), 6),
+    }
+    if null and null.get("available") and null.get("enough_reps"):
+        threshold = float(null["null_max_p95"])
+        out.update({
+            "null_max_p95": threshold,
+            "null_max_mean": null["null_max_mean"],
+            "decided_by": "null empírico del máximo",
+            "significant": bool(float(top["mi"]) > threshold),
+        })
+    elif null and null.get("available"):
+        out.update({
+            "null_max_p95": float(null["null_max_p95"]),
+            "decided_by": f"null insuficiente (<{MIN_NULL_REPS} repeticiones)",
+            "significant": False,
+        })
+    else:
+        out.update({"decided_by": "chi-cuadrado con Bonferroni",
+                    "significant": bool(out["p_chi2_bonferroni"] < ALPHA)})
+    return out
+
+
+def change_point(draws: list) -> dict:
+    """Scan for the split that most changes the mean draw-sum.
+
+    A real regime change would show a standardized shift well above what random
+    splits of a stationary series produce.
+    """
+    n = len(draws)
+    if n < 100:
+        return {"available": False, "reason": "se requieren al menos 100 sorteos"}
+    sums = [sum(d) for d in draws]
+    mean_all = sum(sums) / n
+    sd = math.sqrt(sum((x - mean_all) ** 2 for x in sums) / n) or 1e-9
+    best_cut, best_z = None, 0.0
+    for c in range(50, n - 50, 10):
+        left = sums[:c]
+        right = sums[c:]
+        z = abs(sum(left) / len(left) - sum(right) / len(right)) / sd
+        if z > best_z:
+            best_cut, best_z = c, z
+    # a stationary series still produces some maximum by chance
+    reference = 2.0 * math.sqrt(1.0 / 50 + 1.0 / 50)
+    return {
+        "available": True,
+        "cut_index": best_cut,
+        "standardized_shift": round(best_z, 5),
+        "noise_reference": round(reference, 5),
+        "significant": best_z > reference,
+    }
+
+
+def drift_l1(draws: list, max_number: int, window: int = 200) -> dict:
+    """L1 distance between the number distributions of two consecutive windows,
+    compared against the drift pure sampling noise would create."""
+    if len(draws) < 2 * window:
+        return {"available": False, "window": window}
+    pick = 6
+
+    def freq(ds):
+        c = Counter(n for d in ds for n in d if 1 <= n <= max_number)
+        tot = sum(c.values()) or 1
+        return [c.get(n, 0) / tot for n in range(1, max_number + 1)]
+
+    a = freq(draws[-2 * window:-window])
+    b = freq(draws[-window:])
+    l1 = sum(abs(x - y) for x, y in zip(a, b))
+    reference = math.sqrt(2 * max_number / (pick * window))
+    return {"available": True, "window": window, "l1": round(l1, 5),
+            "sampling_reference": round(reference, 5),
+            "above_noise": l1 > reference}
+
+
+def block_bootstrap(draws: list, block: int = 10, reps: int = 300,
+                    seed: int = 42, statistic=None) -> dict:
+    """Resample in contiguous BLOCKS, not individual draws.
+
+    Plain bootstrap destroys local temporal structure and so understates the
+    uncertainty of any time-dependent claim. Blocks preserve it, giving an
+    honest confidence interval.
+    """
+    n = len(draws)
+    if n < block * 3:
+        return {"available": False, "reps": 0}
+    if statistic is None:
+        def statistic(sample):
+            return sum(sum(d) for d in sample) / len(sample)
+    blocks = [draws[i:i + block] for i in range(0, n, block)]
+    rng = random.Random(seed)
+    means = []
+    for _ in range(reps):
+        sample = []
+        for _ in range(len(blocks)):
+            sample.extend(blocks[rng.randrange(len(blocks))])
+        means.append(statistic(sample))
+    means.sort()
+    lo = means[int(0.025 * len(means))]
+    hi = means[min(len(means) - 1, int(0.975 * len(means)))]
+    mean = sum(means) / len(means)
+    return {"available": True, "reps": reps, "block_size": block,
+            "mean": round(mean, 4), "ci95": [round(lo, 4), round(hi, 4)],
+            "observed": round(statistic(draws), 4)}
+
+
+# --------------------------------------------------------------------------- #
 # 5. Temporal permutation test
 # --------------------------------------------------------------------------- #
 def temporal_permutation_test(draws: list, evaluate_fn, n_permutations: int = 40,

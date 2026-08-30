@@ -27,6 +27,8 @@ from sqlalchemy.orm import Session
 
 from . import ensemble
 from . import research_lab as rlab
+from . import confirmation as cqueue
+from .labs import ClassicalMLLab, DeepLearningLab, QuantumLab, StatisticalLab
 from .agents import (BacktestAgent, DataAgent, MasterAgent, MLResearcher,
                      OptimizerAgent, RiskAgent, StatisticianAgent,
                      paired_significance)
@@ -76,6 +78,24 @@ def _window_bounds(n: int, windows: int, size: int) -> list[tuple[int, int]]:
     return list(reversed(bounds))
 
 
+ML_LABELS = {
+    "ml_xgboost": "XGBoost (ML clásico)",
+    "ml_extra_trees": "ExtraTrees (ML clásico)",
+    "ml_random_forest": "RandomForest (ML clásico)",
+    "ml_gradient_boosting": "GradientBoosting (ML clásico)",
+    "ml_lightgbm": "LightGBM (ML clásico)",
+    "ml_catboost": "CatBoost (ML clásico)",
+}
+
+
+def _arm_label(arm: str) -> str:
+    if arm == "ensemble_genius":
+        return "Ensamble Genius (fusionado)"
+    if arm in ML_LABELS:
+        return ML_LABELS[arm]
+    return ensemble.MODEL_LABELS.get(arm, arm)
+
+
 def _hits(ticket: list[int], actual: list[int], cfg: GameConfig) -> int:
     if cfg.kind == "positional":
         return sum(1 for i, d in enumerate(ticket[:len(actual)]) if d == actual[i])
@@ -86,7 +106,8 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
                  windows: int = DEFAULT_WINDOWS, window_size: int = DEFAULT_WINDOW_SIZE,
                  seed: int = 42, persist: bool = True,
                  permutations: int = DEFAULT_PERMUTATIONS,
-                 perm_window: int = DEFAULT_PERM_WINDOW) -> dict:
+                 perm_window: int = DEFAULT_PERM_WINDOW,
+                 include_ml_lab: bool = True) -> dict:
     """Execute one full research cycle. Read-only over the history."""
     from ..models import Experiment, Hypothesis, ModelVersion
 
@@ -121,8 +142,14 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
     # 2. run_statistics — includes the null-hypothesis test (selection only)
     stats = stat_agent.analyze(selection, cfg)
 
-    # 2b. PROTOCOL v3, point 4 — diagnostics: why no signal appears
-    diagnostics = rlab.run_diagnostics(selection, cfg.max_number)
+    # 2b. STATISTICAL LAB (v4) — χ² · MI · drift · pairs · change-point
+    statistical_lab = StatisticalLab().run(selection, cfg)
+    statistical_lab["chi_square"] = stats["uniformity"]
+    diagnostics = statistical_lab["diagnostics"]
+
+    # DEEP LEARNING LAB + QUANTUM CHALLENGER — declared with their real status
+    deep_lab = DeepLearningLab().run()
+    quantum_lab = QuantumLab().run()
 
     # 2c. PROTOCOL v3, point 6 — hypotheses are registered BEFORE any test is
     # run, so the record cannot be rewritten to match whatever came out.
@@ -146,6 +173,11 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
     arm_hits_all: dict[str, list[int]] = {}
     baseline_hits_all: list[int] = []
 
+    # CLASSICAL ML LAB — challengers trained ONCE per window on prior data only
+    ml_lab = ClassicalMLLab()
+    ml_available = [k for k, v in ml_lab.available_models().items() if v == "disponible"]
+    ml_keys = ml_available if include_ml_lab else []
+
     for wi, (start, end) in enumerate(bounds):
         # ensemble weights frozen with data available BEFORE the window
         pre = selection[:start]
@@ -155,7 +187,15 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
         except Exception:
             frozen_weights = {k: 1.0 / len(ensemble.MODEL_KEYS) for k in ensemble.MODEL_KEYS}
 
+        fitted_ml = {}
+        if ml_keys:
+            try:
+                fitted_ml = ml_lab.fit_window(pre, cfg, ml_keys)
+            except Exception:
+                fitted_ml = {}
+
         model_hits: dict[str, list[int]] = {k: [] for k in ensemble.MODEL_KEYS}
+        ml_hits: dict[str, list[int]] = {f"ml_{k}": [] for k in fitted_ml}
         ens_hits: list[int] = []
         base_hits: list[int] = []
         rng = random.Random(seed + wi)
@@ -165,6 +205,12 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
             probs_by_model = ensemble.all_model_probabilities(train, cfg)
             for k, probs in probs_by_model.items():
                 model_hits[k].append(_hits(_ticket(probs, cfg), actual, cfg))
+            for k, model in fitted_ml.items():
+                try:
+                    sc = ml_lab.scores(model, train, cfg)
+                    ml_hits[f"ml_{k}"].append(_hits(_ticket(sc, cfg), actual, cfg))
+                except Exception:
+                    pass
             fused = {num: 0.0 for num in range(1, cfg.max_number + 1)}
             for k, probs in probs_by_model.items():
                 wk = frozen_weights.get(k, 0.0)
@@ -179,10 +225,19 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
         for k, hits in model_hits.items():
             arms.setdefault(k, {})[wi] = _summarize(hits, cfg)
             arm_hits_all.setdefault(k, []).extend(hits)
+        for k, hits in ml_hits.items():
+            if len(hits) == (end - start):     # only complete windows are comparable
+                arms.setdefault(k, {})[wi] = _summarize(hits, cfg)
+                arm_hits_all.setdefault(k, []).extend(hits)
         arms.setdefault("ensemble_genius", {})[wi] = _summarize(ens_hits, cfg)
         arm_hits_all.setdefault("ensemble_genius", []).extend(ens_hits)
         per_window_baseline[wi] = _summarize(base_hits, cfg)
         baseline_hits_all.extend(base_hits)
+
+    # drop ML arms that could not be evaluated in every window
+    for k in [a for a in arms if a.startswith("ml_") and len(arms[a]) != len(bounds)]:
+        arms.pop(k, None)
+        arm_hits_all.pop(k, None)
 
     def _aggregate(per_window: dict[int, dict]) -> dict:
         ns = [m["n"] for m in per_window.values()]
@@ -228,8 +283,9 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
         sig = paired_significance(arm_hits_all.get(arm, []), baseline_hits_all)
         results.append({
             "model_name": arm,
-            "label": ("Ensamble Genius (fusionado)" if arm == "ensemble_genius"
-                      else ensemble.MODEL_LABELS.get(arm, arm)),
+            "label": _arm_label(arm),
+            "lab": ("classical_ml" if arm.startswith("ml_")
+                    else ("ensemble" if arm == "ensemble_genius" else "statistical")),
             "metrics": agg,
             "per_window": {str(k): v for k, v in per_window.items()},
             "windows_won": won,
@@ -306,6 +362,23 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
                 permutation_block[k]["q_value"] = c["q"]
                 permutation_block[k]["significant_corrected"] = c["significant"]
 
+    # BLOCK BOOTSTRAP — resample in contiguous blocks so local temporal
+    # structure survives; a plain bootstrap would understate the uncertainty.
+    bootstrap_block = rlab.block_bootstrap(selection, block=10, reps=200, seed=seed)
+    if best and arm_hits_all.get(best["model_name"]):
+        hits_series = arm_hits_all[best["model_name"]]
+        bootstrap_best = rlab.block_bootstrap(
+            [[h] for h in hits_series], block=5, reps=200, seed=seed,
+            statistic=lambda sample: sum(x[0] for x in sample) / len(sample))
+        if bootstrap_best.get("available"):
+            bootstrap_best["arm"] = best["model_name"]
+            bootstrap_best["random_baseline"] = baseline["mean_hits"]
+            # if the interval contains the random baseline, the edge is not solid
+            bootstrap_best["excludes_random"] = bootstrap_best["ci95"][0] > baseline["mean_hits"]
+        bootstrap_block = {"draw_sums": bootstrap_block, "best_arm_hits": bootstrap_best}
+    else:
+        bootstrap_block = {"draw_sums": bootstrap_block, "best_arm_hits": None}
+
     # 4b. PROTOCOL v3, point 7 — the Golden Holdout is touched ONLY here, and
     # only by a candidate that already passed every corrected criterion.
     golden_block = rlab.golden_holdout_block(split)
@@ -375,6 +448,25 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
     champion_row = None
     if best and not policy["promote"]:
         best["accepted"] = False
+
+    # CONFIRMATION QUEUE — a candidate that cleared every gate still has to
+    # replicate in independent runs before it can become Champion.
+    queue_state = None
+    if persist and best:
+        if policy["promote"]:
+            queue_state = cqueue.submit(
+                db, cfg.key, best["model_name"], run_id, seed,
+                {"edge_vs_random": best["edge_vs_random"], "q_value": best.get("q_value"),
+                 "windows_won": best["windows_won"],
+                 "golden_holdout": (golden_eval or {}).get("edge_vs_random")})
+        else:
+            queue_state = cqueue.fail(db, cfg.key, best["model_name"], run_id,
+                                      policy["reason"])
+    ready = bool(queue_state and queue_state.get("ready_to_promote"))
+    if best and policy["promote"] and not ready:
+        # passed the statistics, still awaiting replication
+        best["accepted"] = False
+
     if persist:
         champion_row = (db.query(ModelVersion)
                         .filter(ModelVersion.game_type == cfg.key,
@@ -395,12 +487,17 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
                     active=True,
                 )
                 db.add(champion_row)
+                db.commit()
+                cqueue.mark_promoted(db, cfg.key, best["model_name"])
                 promotion = {"promoted": True, "reason": best["reason"],
                              "windows_won": best["windows_won"],
                              "model_name": best["model_name"]}
             else:
                 promotion["reason"] = ("El challenger cumple el umbral pero no supera al "
                                        "campeón vigente; no se promueve.")
+        elif best and policy["promote"] and not ready:
+            promotion["reason"] = (queue_state or {}).get(
+                "message", "En cola de confirmación: falta replicación independiente.")
 
     # 5b. Resolve the PRE-REGISTERED hypotheses against the evidence actually
     # measured. Each one has a concrete, stated criterion — decided after the
@@ -539,8 +636,25 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
         "data_audit": audit,
         "statistics": stats,
         "baseline": baseline,
-        # --- protocol v3 blocks ---
-        "protocol_version": "v3",
+        # --- protocol v3 + v4 architecture blocks ---
+        "protocol_version": "v4",
+        "architecture": {
+            "labs": ["statistical", "classical_ml", "deep_learning", "quantum"],
+            "gates": ["permutation", "block_bootstrap", "multiple_testing",
+                      "golden_holdout", "confirmation_queue"],
+        },
+        "labs": {
+            "statistical": statistical_lab,
+            "classical_ml": {
+                "availability": ml_lab.available_models(),
+                "evaluated": sorted(a for a in arms if a.startswith("ml_")),
+                "enabled": include_ml_lab,
+            },
+            "deep_learning": deep_lab,
+            "quantum": quantum_lab,
+        },
+        "block_bootstrap": bootstrap_block,
+        "confirmation_queue": queue_state,
         "baselines": baselines_block,             # point 3
         "diagnostics": diagnostics,               # point 4
         "permutation_tests": permutation_block,   # point 5
@@ -551,11 +665,13 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
             "significant_after_correction": sum(1 for r in results if r.get("significant_corrected")),
         },
         "golden_holdout": golden_block,           # point 7
-        "pipeline": [                             # point 8
-            "seguridad/auditoría", "split + golden holdout", "baselines separados",
-            "diagnósticos", "walk-forward", "permutación temporal",
-            "corrección múltiple", "challengers", "golden holdout",
-            "decisión champion", "generación de candidatos",
+        "pipeline": [                             # point 8 + v4 architecture
+            "api gateway", "auditoría de datos", "split + golden holdout",
+            "laboratorio estadístico", "laboratorio ML clásico",
+            "laboratorio deep learning", "quantum challenger",
+            "baselines separados", "walk-forward", "permutación temporal",
+            "block bootstrap", "corrección múltiple", "golden holdout",
+            "confirmation queue", "champion/challenger", "motor de candidatos",
         ],
         "experiments": results,
         "best": best,
