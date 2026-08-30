@@ -86,6 +86,12 @@ def main() -> int:
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--lookback", type=int, default=32)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--qnn-steps", type=int, default=25)
+    ap.add_argument("--qnn-rows", type=int, default=60)
+    ap.add_argument("--ablations", action="store_true",
+                    help="ejecutar el protocolo de ablaciones (7 configuraciones)")
+    ap.add_argument("--stability", action="store_true",
+                    help="barrido de estabilidad: 5 semillas x 5 lookbacks")
     ap.add_argument("--submit", action="store_true",
                     help="publicar el resultado en la app como Challenger")
     ap.add_argument("--api", default=os.environ.get("MELATE_API_URL", ""))
@@ -97,7 +103,9 @@ def main() -> int:
 
     if args.model == "qnn":
         from .qnn import QNNChallenger
-        result = QNNChallenger().run(history, max_number, pick, seed=args.seed)
+        result = QNNChallenger(seed=args.seed).run(
+            history, max_number, pick, min_number=min_number,
+            steps=args.qnn_steps, train_rows=args.qnn_rows)
     else:
         try:
             from .train import train_model
@@ -109,6 +117,24 @@ def main() -> int:
             result = train_model(history, max_number, args.model, pick=pick,
                                  epochs=args.epochs, lookback=args.lookback,
                                  min_number=min_number, seed=args.seed)
+
+    # v6 — ablations and stability sweep, run on the same history
+    if args.model != "qnn" and (args.ablations or args.stability):
+        try:
+            from .ablations import run_ablations, run_stability
+            from .train import train_model as _tm
+        except ImportError as exc:
+            result["ablations_error"] = str(exc)
+        else:
+            if args.ablations:
+                result["ablation_protocol"] = run_ablations(
+                    history, max_number, args.model, _tm, pick=pick,
+                    min_number=min_number, epochs=max(8, args.epochs // 2),
+                    seed=args.seed)
+            if args.stability:
+                result["stability"] = run_stability(
+                    history, max_number, args.model, _tm, pick=pick,
+                    min_number=min_number, epochs=max(6, args.epochs // 3))
 
     result["game"] = args.game
     result["draws"] = len(history)

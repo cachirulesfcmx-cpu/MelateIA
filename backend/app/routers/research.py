@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..auth import get_current_user, get_current_admin
 from ..database import get_db
-from ..models import Experiment, Hypothesis, ModelVersion, User
+from ..models import Experiment, Hypothesis, ModelCard, ModelVersion, User
 from ..engine.constitution import (MAX_P_VALUE, MAX_WEIGHT_DELTA_PER_DRAW,
                                    MIN_IMPROVEMENT, MIN_WINDOWS_WON, RULES)
 from ..engine.game_config import GAME_KEYS, get_game
@@ -22,9 +22,13 @@ from ..engine.agents import MasterAgent, MLResearcher
 from ..engine.research_lab import ALPHA, MIN_IMPROVEMENT_V3, PRE_REGISTERED
 from ..engine.labs import ClassicalMLLab, DeepLearningLab, QuantumLab
 from ..engine import confirmation
+from ..engine import model_cards
 from ..engine.confirmation import REQUIRED_CONFIRMATIONS
 from ..engine.autonomous_cycle import (AutonomousResearchCycle, generate_hypotheses,
                                        replication_gate)
+from ..engine.autonomous_researcher import (PROTECTED as PROTECTED_KEYS,
+                                            AutonomousResearcher, ResearchAction,
+                                            validate as validate_action)
 from ..services import load_draw_rows
 
 router = APIRouter(prefix="/api/research", tags=["research"])
@@ -224,12 +228,18 @@ def worker_result(payload: dict, db: Session = Depends(get_db),
         status="challenger",
         run_id=version,
     ))
+    # v6 — a model card is written for every worker run, so its provenance is
+    # on record even though it can never be promoted from here.
+    card = model_cards.card_from_worker(payload, version)
+    model_cards.persist(db, card, version)
     db.commit()
     return {
         "registered": True,
         "version": version,
         "role": "challenger",
         "promotion": "blocked_until_protocol_pass",
+        "model_card": card.to_dict(),
+        "stability_verdict": card.stability_verdict or None,
         "note": ("Registrado como challenger. La pérdida de entrenamiento y una ventaja "
                  "en una sola partición de validación no promueven nada: hace falta el "
                  "protocolo completo y replicación independiente."),
@@ -255,6 +265,66 @@ def worker_challengers(game_type: str | None = None, limit: int = 20,
         "note": ("Ningún resultado del worker puede ser Champion por sí solo; "
                  "la promoción exige el protocolo completo."),
     }
+
+
+@router.get("/model-cards")
+def model_cards_list(game_type: str | None = None, decision: str | None = None,
+                     limit: int = 40, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Provenance record of every evaluated model: data, scores, gates, decision."""
+    q = db.query(ModelCard)
+    if game_type:
+        q = q.filter(ModelCard.game_type == game_type)
+    if decision:
+        q = q.filter(ModelCard.decision == decision)
+    rows = q.order_by(ModelCard.created_at.desc(), ModelCard.id.desc()).limit(min(limit, 200)).all()
+    return {
+        "items": [{
+            "game_type": r.game_type, "model": r.model_name, "version": r.version,
+            "role": r.role, "decision": r.decision,
+            "data_snapshot": r.data_snapshot,
+            "train_samples": r.train_samples, "validation_samples": r.validation_samples,
+            "walk_forward_mean_hits": r.walk_forward_mean_hits,
+            "random_baseline": r.random_baseline, "observed_delta": r.observed_delta,
+            "permutation_p": r.permutation_p,
+            "bootstrap_ci95": [r.bootstrap_low, r.bootstrap_high],
+            "bh_q": r.bh_q, "golden_holdout_score": r.golden_holdout_score,
+            "replication_passed": r.replication_passed,
+            "looks_like_base_rate": r.looks_like_base_rate,
+            "stability_verdict": r.stability_verdict,
+            "extra": _loads(r.extra), "run_id": r.run_id, "created_at": r.created_at,
+        } for r in rows],
+        "note": ("Cada ficha explica por qué un modelo está donde está: qué datos vio, "
+                 "cómo puntuó y qué compuerta lo detuvo."),
+    }
+
+
+@router.get("/researcher")
+def researcher(game_type: str, db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    """What the autonomous researcher proposes — and what it is not allowed to do.
+
+    The limit is enforced in code: every proposed action passes through a
+    validator that rejects anything touching thresholds, the correction, the
+    Golden Holdout or the Champion rules.
+    """
+    if game_type not in GAME_KEYS:
+        raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
+    recorded = [h.statement for h in
+                db.query(Hypothesis).filter(Hypothesis.game_type == game_type).all()]
+    return AutonomousResearcher(game_type).plan(recorded)
+
+
+@router.post("/researcher/validate")
+def researcher_validate(action: dict, user: User = Depends(get_current_admin)):
+    """Check an arbitrary action against the researcher's authority.
+
+    Exposed so the boundary can be tested from outside, not merely asserted.
+    """
+    ok, reason = validate_action(ResearchAction(
+        kind=str(action.get("kind") or ""), payload=action.get("payload") or {}))
+    return {"allowed": ok, "reason": reason,
+            "protected": sorted(PROTECTED_KEYS)}
 
 
 @router.get("/experiments")

@@ -25,11 +25,8 @@ import torch
 from torch import nn
 
 from .dataset import chronological_split, make_windows
+from .evaluation import summarize, theoretical_random_mean_hits
 from .models import build
-
-
-def _exact_random_mean_hits(max_number: int, pick: int) -> float:
-    return (pick * pick) / max_number
 
 
 def _mean_hits(logits: "torch.Tensor", targets: "torch.Tensor", pick: int) -> float:
@@ -41,18 +38,23 @@ def _mean_hits(logits: "torch.Tensor", targets: "torch.Tensor", pick: int) -> fl
 
 def train_model(draws: list[list[int]], max_number: int, kind: str, pick: int = 6,
                 epochs: int = 40, lookback: int = 32, batch_size: int = 64,
-                min_number: int = 1, seed: int = 42) -> dict:
+                min_number: int = 1, seed: int = 42,
+                use_recency: bool = True, use_frequency: bool = True,
+                use_position: bool = True) -> dict:
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    X, y = make_windows(draws, max_number, lookback, min_number)
+    X, y = make_windows(draws, max_number, lookback, min_number,
+                        use_recency=use_recency, use_frequency=use_frequency,
+                        use_position=use_position)
     if len(X) < 100:
         return {"status": "insufficient_data", "samples": int(len(X)),
                 "minimum": 100, "model": kind}
 
     Xtr, Xv, ytr, yv = chronological_split(X, y, 0.8)
-    span = X.shape[2]
-    model = build(kind, span)
+    input_size = X.shape[2]
+    span = y.shape[1]
+    model = build(kind, input_size, output_size=span)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
     loss_fn = nn.BCEWithLogitsLoss()
 
@@ -83,13 +85,11 @@ def train_model(draws: list[list[int]], max_number: int, kind: str, pick: int = 
         if val < best_loss:
             best_loss, best_hits, best_epoch = val, hits, epoch
 
-    random_mean = _exact_random_mean_hits(max_number, pick)
-    # how concentrated the predictions are: a model that just learned the base
-    # rate has almost no spread and cannot beat random no matter its loss
     with torch.no_grad():
-        probs = torch.sigmoid(model(Xv_t))
-        spread = float(probs.std().item())
-        base_rate = pick / span
+        probs = torch.sigmoid(model(Xv_t)).numpy()
+    metrics = summarize(probs, yv, max_number, pick, min_number)
+    random_mean = theoretical_random_mean_hits(max_number, pick)
+    base_rate = pick / span
 
     return {
         "status": "trained",
@@ -102,13 +102,18 @@ def train_model(draws: list[list[int]], max_number: int, kind: str, pick: int = 
         "lookback": lookback,
         "best_epoch": best_epoch,
         "best_val_loss": round(best_loss, 6),
-        # the metric that actually means something
+        "channels": {"presence": True, "recency": use_recency,
+                     "frequency": use_frequency, "position": use_position},
+        # the metrics that actually mean something
         "validation_mean_hits": round(best_hits, 4),
         "random_mean_hits": round(random_mean, 4),
         "edge_vs_random": round(best_hits - random_mean, 4),
-        "prediction_spread": round(spread, 6),
+        "final_epoch_metrics": metrics,
+        "prediction_spread": metrics["prediction_spread"],
         "base_rate": round(base_rate, 6),
-        "looks_like_base_rate": bool(spread < 0.01),
+        "flat_predictions": metrics["flat_predictions"],
+        "close_to_base_rate": metrics["close_to_base_rate"],
+        "looks_like_base_rate": bool(metrics["flat_predictions"] or metrics["close_to_base_rate"]),
         "role": "challenger",
         "promotion": "blocked_until_protocol_pass",
         "note": ("La pérdida de validación no acredita nada: se minimiza prediciendo "

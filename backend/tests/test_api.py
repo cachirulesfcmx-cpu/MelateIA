@@ -927,3 +927,157 @@ def test_v5_worker_package_is_runnable(client):
     assert res["draws"] > 1000            # it really loaded the melate history
     if res["status"] == "unavailable":
         assert "validation_mean_hits" not in res
+
+
+def _add_repo_root():
+    """The worker package lives at the repository root, not under backend/."""
+    import sys, pathlib
+    root = str(pathlib.Path(__file__).resolve().parents[2])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+
+def test_v6_worker_evaluation_and_ablations(client):
+    """Honest metrics, feature masks, and the ablation/stability protocol."""
+    _add_repo_root()
+    import numpy as np
+    from worker.evaluation import (close_to_base_rate, flat_predictions, hit_rate,
+                                   summarize, theoretical_random_mean_hits, topk_numbers)
+    from worker.dataset import build_channels, chronological_split, make_windows
+    from worker.ablations import DEFAULT_ABLATIONS, LOOKBACKS, SEEDS, run_stability
+
+    # top-k ticket and hit counting
+    scores = np.zeros(56)
+    scores[[0, 1, 2, 3, 4, 5]] = 1.0
+    assert topk_numbers(scores, 6) == {1, 2, 3, 4, 5, 6}
+    assert hit_rate([scores], [[1, 2, 3, 50, 51, 52]], 6) == 3.0
+
+    # base-rate warnings: two independent failure modes
+    assert close_to_base_rate(36 / 56, 56, 6) is True
+    assert close_to_base_rate(2.0, 56, 6) is False
+    assert flat_predictions(np.full(56, 0.107)) is True     # learned the base rate
+    assert flat_predictions(np.linspace(0, 1, 56)) is False
+
+    s = summarize([scores], [[1, 2, 3, 50, 51, 52]], 56, 6)
+    assert abs(s["random_mean_hits"] - 36 / 56) < 1e-4   # el dict redondea a 4 dec
+    assert s["edge_vs_random"] == round(3.0 - 36 / 56, 4)
+
+    # channels: presence/recency/frequency/position, no look-ahead in recency
+    draws = [[1, 2, 3, 4, 5, 6], [1, 7, 8, 9, 10, 11], [2, 7, 12, 13, 14, 15]]
+    ch = build_channels(draws, 56)
+    assert ch.shape == (3, 56, 4)
+    assert ch[0, 0, 1] == 0.0            # recency at t=0 knows nothing yet
+    assert ch[1, 0, 1] > 0.0             # number 1 appeared at t=0
+
+    # masks change the input width; presence is always kept
+    full, _ = make_windows(draws * 40, 56, lookback=4)
+    binary, _ = make_windows(draws * 40, 56, lookback=4, use_recency=False,
+                             use_frequency=False, use_position=False)
+    assert full.shape[2] == 56 * 4 and binary.shape[2] == 56
+    assert {a.name for a in DEFAULT_ABLATIONS} == {
+        "full", "no_recency", "no_frequency", "no_position", "binary_only",
+        "short_context", "long_context"}
+    assert SEEDS == [7, 17, 42, 101, 2026] and LOOKBACKS == [8, 16, 32, 64, 96]
+
+    # chronological split never shuffles
+    X = np.arange(100).reshape(100, 1, 1).astype("float32")
+    y = np.arange(100).reshape(100, 1).astype("float32")
+    Xtr, Xv, ytr, yv = chronological_split(X, y, 0.8)
+    assert len(Xtr) == 80 and float(Xv[0][0][0]) == 80.0   # validation is the future
+
+    # stability verdict logic, driven through a stub trainer
+    def stub(*_a, seed=42, lookback=32, **_k):
+        return {"status": "trained", "edge_vs_random": 0.5, "validation_mean_hits": 1.1}
+    stable = run_stability([[1]], 56, "lstm", stub, seeds=[1, 2], lookbacks=[8, 16])
+    assert stable["verdict"] == "estable" and stable["runs"] == 4
+
+    flip = {"n": 0}
+    def stub_mixed(*_a, **_k):
+        flip["n"] += 1
+        return {"status": "trained", "edge_vs_random": 0.5 if flip["n"] % 2 else -0.5,
+                "validation_mean_hits": 1.0}
+    mixed = run_stability([[1]], 56, "lstm", stub_mixed, seeds=[1, 2], lookbacks=[8, 16])
+    assert mixed["verdict"] in ("inestable", "no_reproducible")
+    assert "inestable" in mixed["reading"] or "NO superan" in mixed["reading"]
+
+
+def test_v6_researcher_cannot_move_the_goalposts(client):
+    """The researcher orders experiments; it cannot lower the bar they must clear."""
+    from app.engine.autonomous_researcher import (ALLOWED_ACTIONS, AutonomousResearcher,
+                                                  PROTECTED, ResearchAction, validate)
+
+    ok, _ = validate(ResearchAction("RUN_ABLATIONS", {"configurations": 7}))
+    assert ok is True
+
+    # anything touching the standard of evidence is rejected
+    for payload in ({"alpha": 0.5}, {"minimum_improvement": 0.0},
+                    {"golden_holdout": "skip"}, {"required_confirmations": 0},
+                    {"target": "champion"}, {"bh": "off"}):
+        allowed, reason = validate(ResearchAction("APPLY_BH", payload))
+        assert allowed is False, payload
+        assert "inmutable" in reason
+    # and so is an action outside its authority
+    bad, reason = validate(ResearchAction("PROMOTE_TO_CHAMPION", {}))
+    assert bad is False and "no permitida" in reason
+
+    plan = AutonomousResearcher("melate").plan([])
+    assert plan["rejected"] == []                 # its own proposals are all legal
+    kinds = {a["kind"] for a in plan["approved"]}
+    assert {"RUN_ABLATIONS", "RUN_MULTI_SEED", "RUN_LOOKBACK_SWEEP",
+            "RUN_GOLDEN_HOLDOUT", "RUN_REPLICATION"} <= kinds
+    assert set(plan["authority"]["may"]) == ALLOWED_ACTIONS
+    assert set(plan["authority"]["may_not"]) == PROTECTED
+
+    # the boundary is testable from outside too
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+    r = client.post("/api/research/researcher/validate", headers=ah,
+                    json={"kind": "APPLY_BH", "payload": {"alpha": 0.9}})
+    assert r.status_code == 200 and r.json()["allowed"] is False
+    r2 = client.post("/api/research/researcher/validate", headers=ah,
+                     json={"kind": "RUN_PERMUTATION", "payload": {}})
+    assert r2.json()["allowed"] is True
+
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    got = client.get("/api/research/researcher?game_type=melate", headers=uh)
+    assert got.status_code == 200 and got.json()["rejected"] == []
+
+
+def test_v6_model_cards(client):
+    """Every evaluated model leaves a provenance card."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+
+    r = client.post("/api/research/run?game_type=melate&windows=2&window_size=12"
+                    "&permutations=0&include_ml_lab=false", headers=ah)
+    assert r.status_code == 200, r.text
+    run = r.json()
+    assert len(run["model_cards"]) >= 1
+    card = run["model_cards"][0]
+    for key in ("model", "version", "game", "decision", "data_snapshot",
+                "random_baseline", "observed_delta", "bh_q", "blocked_by"):
+        assert key in card, key
+    # nothing was promoted, so no card claims CHAMPION
+    assert all(c["decision"] != "CHAMPION" for c in run["model_cards"])
+    # the card carries the golden holdout's identity
+    assert card["data_snapshot"] == run["golden_holdout"]["sha256"]
+
+    stored = client.get("/api/research/model-cards?game_type=melate", headers=uh).json()
+    assert len(stored["items"]) >= 1
+    assert stored["items"][0]["bh_q"] is not None
+
+    # a worker run also produces a card, carrying its stability verdict
+    payload = {"game": "melate_retro", "model": "transformer", "status": "trained",
+               "validation_mean_hits": 0.95, "random_mean_hits": 0.9231,
+               "edge_vs_random": 0.027, "looks_like_base_rate": True,
+               "train_samples": 900, "validation_samples": 220,
+               "stability": {"verdict": "inestable", "reading": "aparece y desaparece"}}
+    w = client.post("/api/research/worker-result", headers=ah, json=payload)
+    assert w.status_code == 200
+    body = w.json()
+    assert body["model_card"]["decision"] == "CHALLENGER"
+    assert body["stability_verdict"] == "inestable"
+    assert body["model_card"]["looks_like_base_rate"] is True
+
+    cards = client.get("/api/research/model-cards?game_type=melate_retro", headers=uh).json()
+    assert any(c["model"] == "worker_transformer" and c["stability_verdict"] == "inestable"
+               for c in cards["items"])
