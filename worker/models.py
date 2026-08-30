@@ -36,9 +36,9 @@ class TransformerChallenger(nn.Module):
         return self.head(y[:, -1, :])
 
 
-def build(kind: str, input_size: int):
+def build(kind: str, input_size: int, output_size: int | None = None):
     if kind == "lstm":
-        return LSTMChallenger(input_size)
+        return LSTMChallenger(input_size, output_size=output_size)
     if kind == "transformer":
-        return TransformerChallenger(input_size)
+        return TransformerChallenger(input_size, output_size=output_size)
     raise ValueError(f"modelo desconocido: {kind}")

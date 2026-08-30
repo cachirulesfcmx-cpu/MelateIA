@@ -212,6 +212,40 @@ class ModelVersion(Base):
     promoted_at = Column(DateTime, default=utcnow)
 
 
+class ModelCard(Base):
+    """Full provenance record of a model: what it was trained on, how it scored,
+    every gate it faced, and the decision that followed.
+
+    A model card is the answer to "why is this model where it is". Without one,
+    a Champion is just a name in a table.
+    """
+    __tablename__ = "model_cards"
+
+    id = Column(Integer, primary_key=True, index=True)
+    game_type = Column(String, index=True, nullable=False)
+    model_name = Column(String, nullable=False)
+    version = Column(String, index=True, nullable=False)
+    role = Column(String, default="challenger")
+    data_snapshot = Column(String, default="")      # sha256 of the golden holdout
+    train_samples = Column(Integer, default=0)
+    validation_samples = Column(Integer, default=0)
+    walk_forward_mean_hits = Column(Float, nullable=True)
+    random_baseline = Column(Float, nullable=True)
+    observed_delta = Column(Float, nullable=True)
+    permutation_p = Column(Float, nullable=True)
+    bootstrap_low = Column(Float, nullable=True)
+    bootstrap_high = Column(Float, nullable=True)
+    bh_q = Column(Float, nullable=True)
+    golden_holdout_score = Column(Float, nullable=True)
+    replication_passed = Column(Boolean, default=False)
+    looks_like_base_rate = Column(Boolean, default=False)
+    stability_verdict = Column(String, default="")
+    decision = Column(String, default="CHALLENGER")
+    extra = Column(Text, default="{}")              # JSON: ablations, sweeps, notes
+    run_id = Column(String, index=True, default="")
+    created_at = Column(DateTime, default=utcnow)
+
+
 class ConfirmationQueue(Base):
     """Candidates awaiting independent replication before becoming Champion.
 

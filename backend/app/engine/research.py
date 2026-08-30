@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from . import ensemble
 from . import research_lab as rlab
 from . import confirmation as cqueue
+from . import model_cards
 from .autonomous_cycle import (STATES as CYCLE_STATES, generate_hypotheses,
                                replication_gate)
 from .labs import ClassicalMLLab, DeepLearningLab, QuantumLab, StatisticalLab
@@ -715,4 +716,14 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
         "llm_wrote_predictions": False,
     }
     run["constitution"] = check_compliance(run)
+
+    # v6 — MODEL CARDS: provenance for the arms that mattered in this cycle
+    cards = []
+    for arm in results[:5]:
+        cards.append(model_cards.card_from_run(run, arm).to_dict())
+    if persist and cards:
+        for arm in results[:5]:
+            model_cards.persist(db, model_cards.card_from_run(run, arm), run_id)
+        db.commit()
+    run["model_cards"] = cards
     return run
