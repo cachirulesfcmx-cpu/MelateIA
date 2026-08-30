@@ -23,6 +23,8 @@ type Arm = {
   windows_won: number;
   edge_vs_random: number;
   significance: { p_value: number; significant: boolean; mean_diff: number };
+  q_value?: number;
+  significant_corrected?: boolean;
   accepted: boolean;
   reason: string;
 };
@@ -34,6 +36,24 @@ type Run = {
   verdict_text?: string;
   tested_draws?: number;
   draws?: number;
+  selection_draws?: number;
+  protocol_version?: string;
+  baselines?: {
+    teorico: { mean_hits: number; formula: string };
+    empirico_exacto: { mean_hits: number; ci95_low: number; ci95_high: number; method: string };
+    simulado_montecarlo: { mean_hits: number };
+    de_modelo: Record<string, { mean_hits: number; edge_vs_random: number; q_value: number }>;
+    nota: string;
+  };
+  diagnostics?: { reading: string; strongest_lag?: string; strongest_autocorrelation?: number; noise_threshold?: number };
+  permutation_tests?: Record<string, { label?: string; observed_mean_hits?: number; null_mean_hits?: number; p_value?: number; q_value?: number; n_permutations?: number; error?: string }>;
+  multiple_testing?: { method: string; alpha: number; tests: number; significant_after_correction: number };
+  golden_holdout?: {
+    rows: number; sha256: string; locked: boolean; evaluated?: boolean;
+    split_rows?: Record<string, number>;
+    evaluation?: { label: string; edge_vs_random: number; passed: boolean; note: string };
+  };
+  pre_registered_results?: Record<string, boolean>;
   baseline?: { mean_hits: number; expected_random: number };
   experiments?: Arm[];
   statistics?: { uniformity: { p_value: number; uniform: boolean; chi_square: number }; reading: string };
@@ -166,23 +186,117 @@ export default function Research() {
                 </GlassCard>
               )}
 
-              <GlassCard className="!p-3">
-                <p className="text-[11px] text-white/40 uppercase tracking-wide mb-2">Línea base del azar</p>
-                <div className="grid grid-cols-3 gap-2 text-center">
-                  <div>
-                    <p className="text-lg font-bold tnum">{run.baseline?.mean_hits.toFixed(3)}</p>
-                    <p className="text-[10px] text-white/40">azar medido</p>
+              {run.baselines && (
+                <GlassCard className="!p-3">
+                  <p className="text-[11px] text-white/40 uppercase tracking-wide mb-2">
+                    Baselines separados <span className="text-white/25">· nunca se mezclan</span>
+                  </p>
+                  <div className="space-y-1.5 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-white/60">Teórico ({run.baselines.teorico.formula})</span>
+                      <span className="tnum font-semibold">{run.baselines.teorico.mean_hits.toFixed(4)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-white/60">Empírico exacto (hipergeométrico)</span>
+                      <span className="tnum font-semibold">{run.baselines.empirico_exacto.mean_hits.toFixed(4)}</span>
+                    </div>
+                    <div className="flex justify-between text-white/40">
+                      <span>IC 95% de la media</span>
+                      <span className="tnum">
+                        {run.baselines.empirico_exacto.ci95_low.toFixed(3)} – {run.baselines.empirico_exacto.ci95_high.toFixed(3)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-white/60">Simulado (una realización)</span>
+                      <span className="tnum">{run.baselines.simulado_montecarlo.mean_hits.toFixed(4)}</span>
+                    </div>
+                    {Object.entries(run.baselines.de_modelo).map(([name, m]) => (
+                      <div key={name} className="flex justify-between">
+                        <span className="text-white/60">Modelo · {name}</span>
+                        <span className="tnum">
+                          {m.mean_hits.toFixed(3)} <span className="text-white/35">(q={m.q_value?.toFixed(2)})</span>
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                  <div>
-                    <p className="text-lg font-bold tnum">{run.baseline?.expected_random.toFixed(3)}</p>
-                    <p className="text-[10px] text-white/40">esperado teórico</p>
+                  <p className="text-[10px] text-white/35 mt-2 leading-relaxed">{run.baselines.nota}</p>
+                </GlassCard>
+              )}
+
+              {run.multiple_testing && (
+                <GlassCard className="!p-3">
+                  <p className="text-[11px] text-white/40 uppercase tracking-wide mb-1">
+                    Corrección por pruebas múltiples
+                  </p>
+                  <p className="text-xs text-white/70 leading-relaxed">
+                    {run.multiple_testing.method} sobre <span className="tnum">{run.multiple_testing.tests}</span> pruebas
+                    (α={run.multiple_testing.alpha}):{" "}
+                    <span className={run.multiple_testing.significant_after_correction > 0 ? "text-emerald-300" : "text-white/90"}>
+                      {run.multiple_testing.significant_after_correction} significativas
+                    </span>{" "}
+                    tras corregir. Sin esto, probar {run.multiple_testing.tests} modelos a la vez fabrica un
+                    "ganador" por puro azar.
+                  </p>
+                </GlassCard>
+              )}
+
+              {run.golden_holdout && (
+                <GlassCard className="!p-3">
+                  <p className="text-[11px] text-white/40 uppercase tracking-wide mb-1">
+                    Golden Holdout · <span className="text-amber-300/80">bloqueado</span>
+                  </p>
+                  <p className="text-xs text-white/70 leading-relaxed">
+                    <span className="tnum">{run.golden_holdout.rows}</span> sorteos finales (10%) reservados y fuera de
+                    toda selección. Identidad SHA-256{" "}
+                    <span className="tnum text-white/45">{run.golden_holdout.sha256.slice(0, 16)}…</span>
+                  </p>
+                  {run.golden_holdout.split_rows && (
+                    <p className="text-[10px] text-white/35 mt-1 tnum">
+                      train {run.golden_holdout.split_rows.train} · val {run.golden_holdout.split_rows.validation} ·
+                      test {run.golden_holdout.split_rows.test} · golden {run.golden_holdout.split_rows.golden}
+                    </p>
+                  )}
+                  <p className="text-[10px] text-white/50 mt-1.5">
+                    {run.golden_holdout.evaluated
+                      ? run.golden_holdout.evaluation?.note
+                      : "No se tocó en este ciclo: ningún candidato llegó a la evaluación final."}
+                  </p>
+                </GlassCard>
+              )}
+
+              {run.diagnostics?.reading && (
+                <GlassCard className="!p-3">
+                  <p className="text-[11px] text-white/40 uppercase tracking-wide mb-1">
+                    Diagnóstico: ¿por qué no aparece señal?
+                  </p>
+                  <p className="text-xs text-white/70 leading-relaxed">{run.diagnostics.reading}</p>
+                </GlassCard>
+              )}
+
+              {run.permutation_tests && Object.keys(run.permutation_tests).length > 0 && (
+                <GlassCard className="!p-3">
+                  <p className="text-[11px] text-white/40 uppercase tracking-wide mb-2">
+                    Permutación temporal · ¿el orden de los sorteos informa?
+                  </p>
+                  <div className="space-y-1.5">
+                    {Object.entries(run.permutation_tests).map(([k, v]) =>
+                      v.error ? null : (
+                        <div key={k} className="flex items-center justify-between text-xs">
+                          <span className="text-white/70 truncate">{v.label || k}</span>
+                          <span className="tnum text-white/50 shrink-0">
+                            {v.observed_mean_hits?.toFixed(3)} vs {v.null_mean_hits?.toFixed(3)} · p=
+                            {v.p_value?.toFixed(3)}
+                          </span>
+                        </div>
+                      ),
+                    )}
                   </div>
-                  <div>
-                    <p className="text-lg font-bold tnum">{run.tested_draws}</p>
-                    <p className="text-[10px] text-white/40">sorteos probados</p>
-                  </div>
-                </div>
-              </GlassCard>
+                  <p className="text-[10px] text-white/35 mt-2 leading-relaxed">
+                    Se aleatoriza el orden cronológico conservando los números de cada sorteo. Si el resultado real cae
+                    dentro de esa distribución, lo aprendido no dependía del tiempo.
+                  </p>
+                </GlassCard>
+              )}
 
               {run.statistics && (
                 <GlassCard className="!p-3">
@@ -198,7 +312,8 @@ export default function Research() {
                 <div className="p-3 border-b border-white/10">
                   <p className="text-xs font-semibold">Modelos contra el azar</p>
                   <p className="text-[10px] text-white/40">
-                    Aceptado = supera el umbral, gana varias ventanas y es significativo (p &lt; 0.05)
+                    Aceptado = supera el umbral, gana varias ventanas y sigue siendo significativo tras corregir por
+                    pruebas múltiples (q &lt; 0.05)
                   </p>
                 </div>
                 <div className="max-h-[420px] overflow-y-auto divide-y divide-white/5">
@@ -209,6 +324,9 @@ export default function Research() {
                         <p className="text-[10px] text-white/45 tnum">
                           {a.metrics.mean_hits.toFixed(3)} aciertos · ventaja {a.edge_vs_random > 0 ? "+" : ""}
                           {a.edge_vs_random.toFixed(4)} · {a.windows_won} vent. · p={a.significance.p_value.toFixed(3)}
+                          {a.q_value !== undefined && (
+                            <span className="text-white/60"> · q={a.q_value.toFixed(3)}</span>
+                          )}
                         </p>
                       </div>
                       <span

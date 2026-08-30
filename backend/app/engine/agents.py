@@ -146,9 +146,12 @@ class BacktestAgent:
             "requires_baseline_comparison": True,
             "requires_multiple_windows": True,
             "requires_statistical_significance": True,
+            "requires_multiple_testing_correction": True,
+            "requires_golden_holdout_survival": True,
             "minimum_improvement": MIN_IMPROVEMENT,
             "minimum_windows_won": MIN_WINDOWS_WON,
-            "maximum_p_value": MAX_P_VALUE,
+            "maximum_q_value": MAX_P_VALUE,
+            "correction": "Benjamini-Hochberg (FDR)",
         }
 
     def accepts(self, model_metrics: dict, baseline_metrics: dict, windows_won: int,
@@ -161,12 +164,18 @@ class BacktestAgent:
         if windows_won < MIN_WINDOWS_WON:
             return False, (f"Ganó {windows_won} ventana(s); se requieren "
                            f"{MIN_WINDOWS_WON} independientes. No se promueve.")
-        p = (significance or {}).get("p_value", 1.0)
-        if p > MAX_P_VALUE:
-            return False, (f"Ventaja {edge:+.4f} no es distinguible del azar "
-                           f"(p={p:.3f} > {MAX_P_VALUE}). Es ruido: no se promueve.")
+        sig = significance or {}
+        p = sig.get("p_value", 1.0)
+        # When a family of arms was tested at once, the corrected q-value is the
+        # one that decides (protocol v3, point 6 — anti p-hacking).
+        q = sig.get("q_value", p)
+        if q > MAX_P_VALUE:
+            return False, (f"Ventaja {edge:+.4f} no es distinguible del azar tras corregir "
+                           f"por pruebas múltiples (p={p:.3f}, q={q:.3f} > {MAX_P_VALUE}). "
+                           f"Es ruido: no se promueve.")
         return True, (f"Mejora {edge:+.4f} sobre el azar en {windows_won} ventanas "
-                      f"independientes, significativa (p={p:.3f}). Promoción válida.")
+                      f"independientes, significativa tras corrección "
+                      f"(p={p:.3f}, q={q:.3f}). Promoción válida.")
 
 
 class OptimizerAgent:

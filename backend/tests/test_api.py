@@ -381,9 +381,9 @@ def test_constitution_endpoint(client):
     c = client.get("/api/research/constitution", headers=uh)
     assert c.status_code == 200
     body = c.json()
-    assert len(body["rules"]) == 10
+    assert len(body["rules"]) == 15          # 10 originales + 5 del protocolo v3
     ids = [r["id"] for r in body["rules"]]
-    assert ids == list(range(1, 11))
+    assert ids == list(range(1, 16))
     # rule 10 — the system is allowed to conclude there is no evidence
     assert "no existe evidencia" in body["rules"][9]["rule"].lower()
     th = body["thresholds"]
@@ -464,7 +464,7 @@ def test_research_cycle_runs_and_is_honest(client):
     assert accepted_flags == sorted(accepted_flags, reverse=True)
     # the run audits itself against the constitution
     assert run["constitution"]["compliant"] is True
-    assert len(run["constitution"]["checks"]) == 10
+    assert len(run["constitution"]["checks"]) == 15
 
     # the record is queryable, and rejected hypotheses are kept (rule 7)
     hyps = client.get("/api/research/hypotheses?game_type=melate", headers=uh).json()
@@ -510,3 +510,140 @@ def test_weight_inertia_rule_six(client):
         assert second["n_draws"] == len(shifted)          # and it DID evolve
     finally:
         db.close()
+
+
+def test_research_lab_statistics_v3(client):
+    """Protocol v3 statistics: exact baselines, BH correction, splits, hashes."""
+    from app.engine import research_lab as rlab
+
+    # point 3 — the exact hypergeometric baseline equals the theoretical mean
+    b = rlab.empirical_random_baseline(120, 56, 6)
+    assert abs(b["mean_hits"] - rlab.theoretical_random_mean_hits(56, 6)) < 1e-6  # dict redondea a 6 dec
+    assert abs(b["mean_hits"] - 36 / 56) < 1e-6
+    assert abs(sum(rlab.hypergeometric_pmf(56, 6).values()) - 1.0) < 1e-9
+    assert b["ci95_low"] < b["mean_hits"] < b["ci95_high"]
+    # Retro has a different N and therefore a different baseline
+    assert abs(rlab.empirical_random_baseline(50, 39, 6)["mean_hits"] - 36 / 39) < 1e-6
+
+    # point 6 — Benjamini-Hochberg: monotone q, never below p, alpha respected
+    ps = [0.001, 0.02, 0.04, 0.2, 0.5]
+    bh = rlab.benjamini_hochberg(ps, alpha=0.05)
+    assert [x["p"] for x in bh] == ps
+    assert all(bh[i]["q"] >= bh[i]["p"] - 1e-9 for i in range(len(ps)))
+    assert all(bh[i]["q"] <= bh[i + 1]["q"] + 1e-9 for i in range(len(ps) - 1))
+    assert bh[0]["significant"] and not bh[-1]["significant"]
+    assert rlab.benjamini_hochberg([]) == []
+    # 16 arms of pure noise must not yield a "winner"
+    noisy = rlab.benjamini_hochberg([0.06 + i * 0.05 for i in range(16)])
+    assert not any(x["significant"] for x in noisy)
+
+    # permutation p-value is never 0 and reacts to the direction
+    assert rlab.permutation_pvalue(1.0, [0.1, 0.2, 0.3]) < rlab.permutation_pvalue(0.0, [0.1, 0.2, 0.3])
+    assert rlab.permutation_pvalue(9.9, []) == 1.0
+
+    # point 7 — chronological split keeps the golden holdout at the END
+    draws = [[i] for i in range(1000)]
+    sp = rlab.chronological_split(draws)
+    assert (len(sp.train), len(sp.validation), len(sp.test), len(sp.golden_holdout)) == (650, 150, 100, 100)
+    assert len(sp.selection) == 900
+    assert sp.golden_holdout[0] == [900] and sp.golden_holdout[-1] == [999]
+    assert not set(map(tuple, sp.selection)) & set(map(tuple, sp.golden_holdout))
+    assert rlab.hash_draws(sp.golden_holdout) == rlab.hash_draws(sp.golden_holdout)
+    assert rlab.hash_draws(sp.golden_holdout) != rlab.hash_draws(sp.test)
+
+    # promotion policy rejects an uncorrected "win"
+    bad = rlab.promotion_decision({"improvement_vs_random": 0.30, "q_value": 0.40,
+                                   "out_of_sample": True, "windows_won": 3})
+    assert bad["promote"] is False and "q-valor" in bad["reason"]
+    # ...and rejects a corrected win that died on the golden holdout
+    dead = rlab.promotion_decision({"improvement_vs_random": 0.30, "q_value": 0.01,
+                                    "out_of_sample": True, "windows_won": 3,
+                                    "golden_holdout_passed": False})
+    assert dead["promote"] is False and "Golden Holdout" in dead["reason"]
+    good = rlab.promotion_decision({"improvement_vs_random": 0.30, "q_value": 0.01,
+                                    "out_of_sample": True, "windows_won": 3,
+                                    "golden_holdout_passed": True})
+    assert good["promote"] is True
+
+
+def test_research_diagnostics_on_random_history(client):
+    """Point 4: on a truly random history the diagnostics must report no signal."""
+    from app.engine import research_lab as rlab
+    import random as _r
+
+    rng = _r.Random(11)
+    hist = [sorted(rng.sample(range(1, 57), 6)) for _ in range(600)]
+    d = rlab.run_diagnostics(hist, 56)
+    assert d["autocorrelation_above_noise"] is False
+    assert d["regime_shift_above_noise"] is False
+    # the luckiest pair of 1,540 must not survive Bonferroni
+    assert d["top_pair_significance"]["tested_pairs"] == 56 * 55 // 2
+    assert d["top_pair_significance"]["significant"] is False
+    assert "ruido" in d["reading"]
+
+    # permutation test on a memoryless predictor: observed sits inside the null
+    def mean_hits(seq):
+        from collections import Counter
+        c = Counter(n for dd in seq[:-20] for n in dd)
+        top = sorted(c, key=c.get, reverse=True)[:6]
+        return sum(len(set(top) & set(x)) for x in seq[-20:]) / 20
+
+    perm = rlab.temporal_permutation_test(hist, mean_hits, n_permutations=20, seed=5)
+    assert perm["n_permutations"] == 20
+    assert 0 < perm["p_value"] <= 1.0
+    assert "orden de sorteos aleatorizado" in perm["null_definition"]
+
+
+def test_research_cycle_v3_protocol(client):
+    """The cycle runs the v3 pipeline and reports every one of its guarantees."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+
+    p = client.get("/api/research/protocol", headers=uh).json()
+    assert p["version"] == "v3" and len(p["pre_registered_hypotheses"]) == 7
+
+    c = client.get("/api/research/constitution", headers=uh).json()
+    assert len(c["rules"]) == 15                     # 10 originales + 5 de v3
+    assert c["thresholds"]["correction"].startswith("Benjamini")
+
+    r = client.post("/api/research/run?game_type=melate&windows=2&window_size=12"
+                    "&permutations=5&perm_window=6", headers=ah)
+    assert r.status_code == 200, r.text
+    run = r.json()
+    assert run["status"] == "ok" and run["protocol_version"] == "v3"
+
+    # point 7 — golden holdout is locked and excluded from selection
+    gh = run["golden_holdout"]
+    assert gh["locked"] is True and gh["selection_allowed"] is False
+    assert len(gh["sha256"]) == 64 and gh["rows"] > 0
+    assert run["selection_draws"] < run["draws"]
+    assert run["selection_draws"] + gh["rows"] == run["draws"]
+
+    # point 3 — the four baseline families are reported apart
+    b = run["baselines"]
+    assert abs(b["teorico"]["mean_hits"] - 36 / 56) < 1e-6
+    assert abs(b["empirico_exacto"]["mean_hits"] - b["teorico"]["mean_hits"]) < 1e-6
+    assert "simulado_montecarlo" in b and "de_modelo" in b
+
+    # point 6 — every arm carries a corrected q-value, and q >= p
+    assert run["multiple_testing"]["method"].startswith("Benjamini")
+    assert run["multiple_testing"]["tests"] == len(run["experiments"])
+    for arm in run["experiments"]:
+        assert arm["q_value"] >= arm["significance"]["p_value"] - 1e-9
+
+    # pre-registered hypotheses were written before the tests and then resolved
+    assert len(run["pre_registered_results"]) == 7
+    hyps = client.get("/api/research/hypotheses?game_type=melate&limit=100", headers=uh).json()
+    prereg = [h for h in hyps if h["evidence"].get("pre_registered")]
+    assert len(prereg) >= 7
+    assert all(h["status"] in ("confirmada", "descartada") for h in prereg)
+    assert all(h["statement"].startswith("[H0") for h in prereg)
+
+    # point 4 — diagnostics ran
+    assert run["diagnostics"]["reading"]
+    # point 8 — the pipeline order is reported
+    assert run["pipeline"][0].startswith("seguridad")
+
+    # the constitution now audits 15 rules and still passes
+    assert len(run["constitution"]["checks"]) == 15
+    assert run["constitution"]["compliant"] is True

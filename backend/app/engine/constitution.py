@@ -32,6 +32,17 @@ RULES: list[dict] = [
      "detail": "La carga de la prueba recae en el modelo, no en el azar."},
     {"id": 10, "rule": "El sistema puede concluir que no existe evidencia suficiente.",
      "detail": "Un veredicto negativo es un resultado válido y se reporta tal cual."},
+    # --- Protocol v3 additions ---
+    {"id": 11, "rule": "El número adicional nunca cuenta como uno de los principales.",
+     "detail": "R7/F7 se almacena aparte y jamás entra en la predicción ni en la evaluación."},
+    {"id": 12, "rule": "Las hipótesis se registran ANTES de ejecutar las pruebas.",
+     "detail": "Pre-registro con run_id: el expediente no puede reescribirse para encajar con el resultado."},
+    {"id": 13, "rule": "Los p-valores se corrigen por pruebas múltiples.",
+     "detail": "Benjamini-Hochberg sobre toda la familia de brazos evaluados; decide el q-valor, no el p crudo."},
+    {"id": 14, "rule": "El Golden Holdout permanece fuera de toda selección.",
+     "detail": "El 10% cronológico final, identificado por SHA-256, solo se usa para evaluar un candidato ya congelado."},
+    {"id": 15, "rule": "El LLM no escribe predicciones ni altera la base.",
+     "detail": "El asistente explica; el motor calcula. Ningún texto generado modifica datos ni pesos."},
 ]
 
 # A challenger must beat the random baseline by at least this many mean hits
@@ -107,6 +118,25 @@ def check_compliance(run: dict) -> dict:
         "Todo modelo se contrastó contra el azar como hipótesis nula.")
     add(10, run.get("verdict") in ("evidencia_insuficiente", "evidencia_debil", "evidencia_significativa"),
         f"Veredicto emitido: {run.get('verdict')}.")
+
+    # --- Protocol v3 checks ---
+    add(11, run.get("additional_number_excluded") is True,
+        "La evaluación usó solo los números principales; el adicional quedó fuera.")
+    prereg = run.get("pre_registered", 0)
+    add(12, prereg > 0,
+        f"{prereg} hipótesis pre-registradas antes de ejecutar las pruebas.")
+    mt = run.get("multiple_testing", {}) or {}
+    add(13, mt.get("method", "").startswith("Benjamini"),
+        f"Corrección {mt.get('method')} sobre {mt.get('tests', 0)} pruebas; "
+        f"{mt.get('significant_after_correction', 0)} significativas tras corregir.")
+    gh = run.get("golden_holdout", {}) or {}
+    add(14, bool(gh.get("locked")) and gh.get("selection_allowed") is False,
+        f"Golden Holdout de {gh.get('rows', 0)} sorteos bloqueado "
+        f"(sha256 {str(gh.get('sha256', ''))[:12]}…), "
+        + ("evaluado una sola vez sobre un candidato congelado."
+           if gh.get("evaluated") else "no se tocó en este ciclo."))
+    add(15, run.get("llm_wrote_predictions") is False,
+        "Ninguna predicción ni peso provino de texto generado por el LLM.")
 
     return {
         "compliant": all(c["ok"] for c in checks),
