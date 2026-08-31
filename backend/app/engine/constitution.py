@@ -79,6 +79,27 @@ RULES: list[dict] = [
      "detail": "Mezclarlos es como creerse el ensayo: el backtest evalúa sobre datos ya conocidos."},
     {"id": 32, "rule": "NO_EDGE sigue siendo un estado válido y no detiene la investigación futura.",
      "detail": "No haber encontrado ventaja no cierra la puerta a seguir buscando con método."},
+    # --- Protocol v9 additions ---
+    {"id": 33, "rule": "Live queda separado de backtest y Golden Holdout.",
+     "detail": "Es la única medición tomada sobre datos que nunca influyeron en nada."},
+    {"id": 34, "rule": "Las ventanas móviles no sustituyen las pruebas corregidas.",
+     "detail": "Describen tramos recientes; la decisión sigue viniendo del protocolo completo."},
+    {"id": 35, "rule": "Un IC que cruza baseline no demuestra edge.",
+     "detail": "Y el IC se ensancha con el número de miradas: revisar tras cada sorteo infla los falsos positivos."},
+    {"id": 36, "rule": "El presupuesto adaptativo tiene límites.",
+     "detail": "Ninguna familia puede superar su tope duro por muy prometedora que parezca."},
+    {"id": 37, "rule": "El agente no cambia alfa, BH, permutation, holdout o Champion Gate.",
+     "detail": "Validador de acciones, no una promesa escrita."},
+    {"id": 38, "rule": "El ranking no usa sólo delta bruto.",
+     "detail": "Ordena por replicación, significancia corregida y cota inferior del intervalo live."},
+    {"id": 39, "rule": "Al incorporar live al entrenamiento se crea una nueva frontera temporal.",
+     "detail": "Sin cerrar la ventana anterior, el siguiente live quedaría contaminado por datos ya vistos."},
+    {"id": 40, "rule": "Degradación live puede retirar un Champion, pero no promueve otro automáticamente.",
+     "detail": "Perder el título es una cosa; ganarlo exige el protocolo entero."},
+    {"id": 41, "rule": "Predicciones live y lineage son auditables.",
+     "detail": "Cada predicción generada en la app queda registrada antes del sorteo."},
+    {"id": 42, "rule": "NO_EDGE sigue siendo válido.",
+     "detail": "Se reafirma: la ausencia de ventaja es un resultado, no un fallo."},
 ]
 
 # A challenger must beat the random baseline by at least this many mean hits
@@ -236,6 +257,39 @@ def check_compliance(run: dict) -> dict:
     edge_mode = (run.get("edge") or {}).get("mode")
     add(32, run.get("research_continues") is True,
         f"Modo {edge_mode}: la investigación sigue abierta en próximos ciclos.")
+
+    # --- Protocol v9 checks ---
+    live = run.get("live_track_record") or {}
+    seq = run.get("sequential") or {}
+    add(33, live.get("separate_from_backtest") is True,
+        "El registro live no se mezcla con backtest ni con el Golden Holdout.")
+    add(34, run.get("windows_replace_corrected_tests") is False,
+        f"{len(seq.get('windows') or {})} ventana(s) móvil(es) reportadas como descriptivas.")
+    add(35, (not seq) or seq.get("status") in ("SIGNAL_CANDIDATE",
+                                               "COMPATIBLE_WITH_BASELINE",
+                                               "INSUFFICIENT_DATA"),
+        (f"IC live [{seq.get('ci_low')}, {seq.get('ci_high')}] ajustado por "
+         f"{seq.get('looks')} mirada(s) → {seq.get('status')}."
+         if seq else "Sin registro live suficiente para un intervalo."))
+    caps = run.get("adaptive_budget") or {}
+    add(36, caps.get("within_caps") is not False,
+        f"Presupuesto adaptativo dentro de topes: {caps.get('within_caps')}.")
+    add(37, run.get("meta_changed_gates") is False,
+        "Ninguna compuerta estadística fue modificada por el agente.")
+    add(38, run.get("ranking_uses_only_delta") is False,
+        "El ranking pondera replicación y significancia, no solo la ventaja bruta.")
+    lineage = run.get("data_lineage") or {}
+    add(39, lineage.get("training_includes_live") is not True or bool(lineage.get("live_end_snapshot")),
+        ("Frontera temporal cerrada antes de incorporar live."
+         if lineage.get("training_includes_live") else
+         "El entrenamiento no incorpora datos live: frontera intacta."))
+    add(40, run.get("live_promoted_champion") is False,
+        "Ninguna promoción se derivó del rendimiento live.")
+    audits = run.get("live_audit") or {}
+    add(41, audits.get("records") is not None,
+        f"{audits.get('records', 0)} predicciones live auditables con su lineage.")
+    add(42, edge_mode in ("NO_EDGE", "EDGE_CANDIDATE"),
+        f"Modo {edge_mode} declarado explícitamente.")
 
     return {
         "compliant": all(c["ok"] for c in checks),

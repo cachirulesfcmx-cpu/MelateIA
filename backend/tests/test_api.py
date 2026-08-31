@@ -382,9 +382,9 @@ def test_constitution_endpoint(client):
     c = client.get("/api/research/constitution", headers=uh)
     assert c.status_code == 200
     body = c.json()
-    assert len(body["rules"]) == 32          # 10 + 5 (v3) + 8 (v7) + 9 (v8)
+    assert len(body["rules"]) == 42          # 10 + 5 (v3) + 8 (v7) + 9 (v8) + 10 (v9)
     ids = [r["id"] for r in body["rules"]]
-    assert ids == list(range(1, 33))
+    assert ids == list(range(1, 43))
     # rule 10 — the system is allowed to conclude there is no evidence
     assert "no existe evidencia" in body["rules"][9]["rule"].lower()
     th = body["thresholds"]
@@ -466,7 +466,7 @@ def test_research_cycle_runs_and_is_honest(client):
     assert accepted_flags == sorted(accepted_flags, reverse=True)
     # the run audits itself against the constitution
     assert run["constitution"]["compliant"] is True
-    assert len(run["constitution"]["checks"]) == 32
+    assert len(run["constitution"]["checks"]) == 42
 
     # the record is queryable, and rejected hypotheses are kept (rule 7)
     hyps = client.get("/api/research/hypotheses?game_type=melate", headers=uh).json()
@@ -605,14 +605,14 @@ def test_research_cycle_v3_protocol(client):
     assert p["version"] == "v3" and len(p["pre_registered_hypotheses"]) == 7
 
     c = client.get("/api/research/constitution", headers=uh).json()
-    assert len(c["rules"]) == 32                     # 10 + 5 (v3) + 8 (v7) + 9 (v8)
+    assert len(c["rules"]) == 42                     # 10 + 5 (v3) + 8 (v7) + 9 (v8) + 10 (v9)
     assert c["thresholds"]["correction"].startswith("Benjamini")
 
     r = client.post("/api/research/run?game_type=melate&windows=2&window_size=12"
                     "&permutations=5&perm_window=6", headers=ah)
     assert r.status_code == 200, r.text
     run = r.json()
-    assert run["status"] == "ok" and run["protocol_version"] == "v8"
+    assert run["status"] == "ok" and run["protocol_version"] == "v9"
 
     # point 7 — golden holdout is locked and excluded from selection
     gh = run["golden_holdout"]
@@ -647,7 +647,7 @@ def test_research_cycle_v3_protocol(client):
     assert run["pipeline"][0] == "api gateway"   # v4 antepone el gateway
 
     # the constitution now audits 15 rules and still passes
-    assert len(run["constitution"]["checks"]) == 32
+    assert len(run["constitution"]["checks"]) == 42
     assert run["constitution"]["compliant"] is True
 
 
@@ -802,7 +802,7 @@ def test_v4_architecture_and_cycle(client):
                     "&permutations=4&perm_window=6", headers=ah)
     assert r.status_code == 200, r.text
     run = r.json()
-    assert run["protocol_version"] == "v8"
+    assert run["protocol_version"] == "v9"
     assert run["architecture"]["gates"][-1] == "confirmation_queue"
 
     labs = run["labs"]
@@ -1217,15 +1217,15 @@ def test_v7_cycle_and_endpoints(client):
     ah = auth(client, "admin@melateai.pro", "admin1234")
 
     c = client.get("/api/research/constitution", headers=uh).json()
-    assert len(c["rules"]) == 32
-    assert [r["id"] for r in c["rules"]] == list(range(1, 33))
+    assert len(c["rules"]) == 42
+    assert [r["id"] for r in c["rules"]] == list(range(1, 43))
     assert "no se presenta como más probable" in c["rules"][15]["rule"]
 
     r = client.post("/api/research/run?game_type=melate&windows=2&window_size=12"
                     "&permutations=0&include_ml_lab=false", headers=ah)
     assert r.status_code == 200, r.text
     run = r.json()
-    assert run["protocol_version"] == "v8"
+    assert run["protocol_version"] == "v9"
     assert run["edge"]["mode"] in ("NO_EDGE", "EDGE_CANDIDATE")
     assert run["dynamic_ensemble"]["confidence"]["level"] in ("NONE", "LOW", "MEDIUM", "HIGH")
     # nothing qualified → every ensemble weight is zero
@@ -1235,7 +1235,7 @@ def test_v7_cycle_and_endpoints(client):
     assert run["portfolio"]["tickets"]
     assert run["claims_higher_probability"] is False
     assert run["claims_guarantee"] is False
-    assert len(run["constitution"]["checks"]) == 32
+    assert len(run["constitution"]["checks"]) == 42
     assert run["constitution"]["compliant"] is True
     # memory recorded the cycle's hypotheses
     assert run["research_memory"].get("experiments", 0) >= 1
@@ -1425,15 +1425,15 @@ def test_v8_cycle_and_endpoints(client):
     ah = auth(client, "admin@melateai.pro", "admin1234")
 
     c = client.get("/api/research/constitution", headers=uh).json()
-    assert len(c["rules"]) == 32
-    assert [r["id"] for r in c["rules"]] == list(range(1, 33))
+    assert len(c["rules"]) == 42
+    assert [r["id"] for r in c["rules"]] == list(range(1, 43))
     assert "NO_EDGE sigue siendo un estado válido" in c["rules"][31]["rule"]
 
     r = client.post("/api/research/run?game_type=melate&windows=2&window_size=12"
                     "&permutations=0&include_ml_lab=false", headers=ah)
     assert r.status_code == 200, r.text
     run = r.json()
-    assert run["protocol_version"] == "v8"
+    assert run["protocol_version"] == "v9"
     assert run["continuous_cycle"]["status"] == "RUN"
     assert "drift" in run and "score" in run["drift"]
     assert run["drift_promoted_anything"] is False
@@ -1444,7 +1444,7 @@ def test_v8_cycle_and_endpoints(client):
     assert run["meta_learning"]["priorities"]
     assert run["experiment_budget"]["within_budget"] is True
     assert run["live_track_record"]["separate_from_backtest"] is True
-    assert len(run["constitution"]["checks"]) == 32
+    assert len(run["constitution"]["checks"]) == 42
     assert run["constitution"]["compliant"] is True
 
     for path in ("/api/research/drift?game_type=melate",
@@ -1458,3 +1458,155 @@ def test_v8_cycle_and_endpoints(client):
     assert d["promotes_anything"] is False
     plan = client.get("/api/research/continuous-plan?game_type=melate", headers=uh).json()
     assert plan["status"] in ("RUN", "WAIT")
+
+
+def test_v9_sequential_corrects_for_repeated_looks(client):
+    """Peeking after every draw inflates false positives; the interval widens."""
+    from app.engine.live_intelligence import analyze, rolling_windows, summarize_live
+    import random as _r
+
+    rng = _r.Random(3)
+    hits = [rng.choice([0, 0, 1, 1, 1, 2, 0, 1, 3]) for _ in range(71)]
+    base = 36 / 56
+
+    one = analyze(hits, base, looks=1)
+    many = analyze(hits, base, looks=len(hits))
+    # same data, stricter conclusion once repeated looks are accounted for
+    assert many.z_used > one.z_used
+    assert many.ci_low < one.ci_low and many.ci_high > one.ci_high
+    assert one.status == "SIGNAL_CANDIDATE"
+    assert many.status == "COMPATIBLE_WITH_BASELINE"
+    assert "mirada" in many.reading
+
+    assert analyze([], base).status == "INSUFFICIENT_DATA"
+    assert analyze([1], base).status == "INSUFFICIENT_DATA"
+
+    w = rolling_windows(hits)
+    assert set(w) == {20, 40, 60} and len(w[20]) == 20
+    assert rolling_windows(hits[:10]) == {}
+
+    live = summarize_live("m", hits, base, looks=5)
+    assert set(live["windows"]) == {"20", "40", "60"}
+    assert "no sustituyen" in live["note"]
+
+
+def test_v9_ranking_lineage_and_budget_caps(client):
+    """Ranking order fixed, lineage frontier enforced, caps respected."""
+    from app.engine.live_intelligence import (AdaptiveBudget, BudgetCaps, DataLineage,
+                                              detect_regression, rank_models)
+
+    # the package sorted by -live_ci_low under reverse=True, ranking the WEAKEST
+    # lower bound first; a stronger bound must win
+    ranked = rank_models([
+        {"model": "debil", "replicated": True, "q_value": 0.01,
+         "live_delta": 0.1, "live_ci_low": -0.5},
+        {"model": "fuerte", "replicated": True, "q_value": 0.01,
+         "live_delta": 0.1, "live_ci_low": 0.05},
+    ])
+    assert [r["model"] for r in ranked] == ["fuerte", "debil"]
+    # replication outranks a bigger raw delta
+    ranked2 = rank_models([
+        {"model": "sin_replicar", "replicated": False, "q_value": 0.001, "live_delta": 9.0},
+        {"model": "replicado", "replicated": True, "q_value": 0.04, "live_delta": 0.01},
+    ])
+    assert ranked2[0]["model"] == "replicado"
+
+    # lineage: folding live into training requires closing the frontier
+    ok = DataLineage("v1", "tr", "va", "ho", "ls", live_end_snapshot="le",
+                     training_includes_live=True)
+    assert ok.validate() is True
+    import pytest as _pt
+    with _pt.raises(ValueError):
+        DataLineage("v1", "tr", "va", "ho", "ls", training_includes_live=True).validate()
+    # not using live at all is always fine
+    assert DataLineage("v1", "tr", "va", "ho", "ls").validate() is True
+
+    caps = AdaptiveBudget(BudgetCaps(statistical=5, classical_ml=5, deep_learning=5,
+                                     qnn=5, portfolio=5))
+    alloc = caps.allocate({"qnn": 100.0, "statistical": 0.0})
+    assert caps.validate(alloc) and max(alloc.values()) <= 5
+    assert caps.allocate({})["qnn"] == 1        # no priorities → minimum each
+
+    assert detect_regression(0.01, 0.20)["status"] == "REGRESSION"
+    assert detect_regression(0.20, 0.19)["status"] == "STABLE_OR_IMPROVED"
+    assert "promueve" in detect_regression(0.1, 0.1)["note"]
+
+
+def test_v9_research_applies_to_every_strategy(client):
+    """Predicciones runs the research layer for ALL strategies, not just Evolutiva."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+
+    for strategy in ("agresiva", "evolutiva", "conservadora", "hibrida", "adaptativa"):
+        r = client.post("/api/predictions/generate", headers=uh,
+                        json={"game_type": "melate", "strategy": strategy, "count": 5})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        res = body.get("research")
+        assert res and res["applied"] is True, strategy
+        assert res["requested"] == 5
+        assert 1 <= res["returned"] <= 5
+        assert len(body["combos"]) == res["returned"]
+        # every returned combo is valid
+        for c in body["combos"]:
+            assert len(set(c["numbers"])) == 6 and all(1 <= n <= 56 for n in c["numbers"])
+        # diversification respected the overlap limit
+        limit = res["diversification"]["overlap_limit"]
+        assert res["diversification"]["max_overlap"] <= limit
+        # the evidence context travels with the prediction
+        assert res["edge_mode"] in ("NO_EDGE", "EDGE_CANDIDATE")
+        assert res["audited_predictions"] == res["returned"]
+        assert "NO aumenta la probabilidad" in res["disclaimer"]
+
+
+def test_v9_pipeline_filters_bad_tickets(client):
+    """The filter really drops calendar-only, long runs and near-duplicates."""
+    from app.engine.prediction_pipeline import apply_research
+    from app.engine.game_config import get_game
+
+    cfg = get_game("melate")
+    combos = [
+        {"numbers": [2, 5, 9, 14, 20, 31], "score": 0.9, "strategy": "t"},    # calendar
+        {"numbers": [30, 31, 32, 33, 45, 52], "score": 0.8, "strategy": "t"}, # long run
+        {"numbers": [7, 19, 23, 34, 41, 55], "score": 0.7, "strategy": "t"},  # good
+        {"numbers": [7, 19, 23, 34, 41, 56], "score": 0.6, "strategy": "t"},  # near-dup
+        {"numbers": [3, 12, 28, 37, 44, 50], "score": 0.5, "strategy": "t"},  # good
+    ]
+    out = apply_research(None, cfg, combos, strategy="t", audit=False, overlap_limit=3)
+    kept = [tuple(c["numbers"]) for c in out["combos"]]
+    assert (7, 19, 23, 34, 41, 55) in kept and (3, 12, 28, 37, 44, 50) in kept
+    assert (2, 5, 9, 14, 20, 31) not in kept        # birthdays: shared prize
+    assert (30, 31, 32, 33, 45, 52) not in kept     # long consecutive run
+    assert (7, 19, 23, 34, 41, 56) not in kept      # too similar to a kept one
+    rejected = out["research"]["risk_filter"]["rejected"]
+    assert rejected["solo_calendario"] == 1 and rejected["secuencia_larga"] == 1
+
+    # never returns an empty list: the user asked for suggestions
+    only_bad = [{"numbers": [1, 2, 3, 4, 5, 6], "score": 0.5, "strategy": "t"}]
+    fb = apply_research(None, cfg, only_bad, strategy="t", audit=False)
+    assert len(fb["combos"]) == 1 and fb["research"]["fallback_reason"]
+
+
+def test_v9_cycle_and_constitution(client):
+    """The v9 cycle reports live intelligence and audits 42 rules."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+
+    c = client.get("/api/research/constitution", headers=uh).json()
+    assert len(c["rules"]) == 42
+    assert [r["id"] for r in c["rules"]] == list(range(1, 43))
+    assert "IC que cruza baseline" in c["rules"][34]["rule"]
+
+    r = client.post("/api/research/run?game_type=melate&windows=2&window_size=12"
+                    "&permutations=0&include_ml_lab=false", headers=ah)
+    assert r.status_code == 200, r.text
+    run = r.json()
+    assert run["protocol_version"] == "v9"
+    assert run["windows_replace_corrected_tests"] is False
+    assert run["ranking_uses_only_delta"] is False
+    assert run["live_promoted_champion"] is False
+    lineage = run["data_lineage"]
+    assert lineage["training_includes_live"] is False
+    assert lineage["holdout_snapshot"] and lineage["train_snapshot"]
+    assert run["adaptive_budget"]["within_caps"] is True
+    assert len(run["constitution"]["checks"]) == 42
+    assert run["constitution"]["compliant"] is True

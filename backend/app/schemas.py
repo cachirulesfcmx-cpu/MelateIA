@@ -154,6 +154,9 @@ class PredictionGenerateOut(BaseModel):
     game_type: str
     strategy: str
     combos: list[GeneratedCombo]
+    # What the research layer did to these combos and what it currently knows:
+    # risk filter, diversification, live audit and the NO_EDGE/EDGE state.
+    research: Optional[dict] = None
 
 
 class PredictionSave(BaseModel):
