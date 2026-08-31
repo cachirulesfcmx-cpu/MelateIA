@@ -212,6 +212,28 @@ class ModelVersion(Base):
     promoted_at = Column(DateTime, default=utcnow)
 
 
+class LivePredictionAudit(Base):
+    """Auditable record of a live prediction (constitution rule 30).
+
+    Written BEFORE the draw, with the model, its version, the seed and the data
+    snapshot it saw — so a claim about performance can be checked against what
+    was actually predicted, not against a story told afterwards.
+    """
+    __tablename__ = "live_prediction_audits"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String, index=True, nullable=False)
+    game_type = Column(String, index=True, nullable=False)
+    model = Column(String, nullable=False)
+    model_version = Column(String, default="")
+    seed = Column(Integer, nullable=True)
+    data_snapshot = Column(String, default="")
+    numbers = Column(String, nullable=False)
+    hits = Column(Integer, nullable=True)          # filled once the draw happens
+    source = Column(String, default="portfolio")
+    generated_at = Column(DateTime, default=utcnow, index=True)
+
+
 class ResearchMemory(Base):
     """Research Memory 2.0 — what has already been asked, and what came out.
 

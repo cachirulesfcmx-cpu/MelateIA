@@ -25,6 +25,9 @@ from ..engine import confirmation
 from ..engine import model_cards
 from ..engine import portfolio as pf
 from ..engine import research_memory as rmem
+from ..engine import continuous as cont
+from ..engine import meta_learning as metal
+from ..engine import track_record as trec
 from ..engine import ensemble
 from ..engine.agents import RiskAgent
 from ..engine.confirmation import REQUIRED_CONFIRMATIONS
@@ -359,6 +362,75 @@ def memory(game_type: str | None = None, limit: int = 40,
             "note": ("Repetir una hipótesis equivalente no aporta evidencia nueva: "
                      "solo añade otra oportunidad de que el azar produzca un "
                      "resultado llamativo.")}
+
+
+@router.get("/track-record")
+def track_record(game_type: str | None = None, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """The app's REAL record: predictions made before the draw (rule 31).
+
+    Kept apart from backtesting on purpose. A backtest scores models on history
+    they were tuned against; this is what was actually predicted in advance.
+    """
+    return trec.live_track_record(db, game_type)
+
+
+@router.get("/live-audits")
+def live_audits(game_type: str | None = None, limit: int = 40,
+                db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Auditable records of live predictions (rule 30)."""
+    return {"items": trec.audit_listing(db, game_type, limit),
+            "note": ("Cada registro se escribe ANTES del sorteo con modelo, versión, "
+                     "semilla y snapshot, para que una afirmación de rendimiento pueda "
+                     "contrastarse con lo que realmente se predijo.")}
+
+
+@router.get("/drift")
+def drift(game_type: str, db: Session = Depends(get_db),
+          user: User = Depends(get_current_user)):
+    """Measured drift, and what it does (rule 27: more research, never promotion)."""
+    if game_type not in GAME_KEYS:
+        raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
+    cfg = get_game(game_type)
+    history = [r["numbers"] for r in load_draw_rows(db, game_type)]
+    decision = cont.DriftTrigger().from_history(history, cfg)
+    return {**decision.as_dict(),
+            "promotes_anything": False,
+            "note": "La deriva abre más investigación; nunca promueve un modelo."}
+
+
+@router.get("/meta-learning")
+def meta_learning(game_type: str | None = None, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """Which families of models have been worth the effort, and the budget plan."""
+    return metal.allocate(db, game_type)
+
+
+@router.get("/continuous-plan")
+def continuous_plan(game_type: str, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    """The continuous-learning plan for this game right now."""
+    if game_type not in GAME_KEYS:
+        raise HTTPException(status_code=400, detail="Tipo de sorteo inválido")
+    cfg = get_game(game_type)
+    history = [r["numbers"] for r in load_draw_rows(db, game_type)]
+    d = cont.DriftTrigger().from_history(history, cfg)
+    champion = (db.query(ModelVersion)
+                .filter(ModelVersion.game_type == game_type,
+                        ModelVersion.role == "champion",
+                        ModelVersion.active.is_(True)).first())
+    last = (db.query(Experiment)
+            .filter(Experiment.game_type == game_type,
+                    Experiment.model_name == "random_baseline")
+            .order_by(Experiment.created_at.desc(), Experiment.id.desc()).first())
+    last_draws = _loads(last.params).get("draws_at_run") if last else None
+    new_draw = last_draws is None or len(history) > last_draws
+    plan = cont.ContinuousLearningCycle().plan(
+        new_draw, drift_score=d.score,
+        active_champion=(champion.model_name if champion else None))
+    return {**plan.as_dict(), "drift": d.as_dict(),
+            "draws_now": len(history), "draws_at_last_run": last_draws,
+            "active_champion": champion.model_name if champion else None}
 
 
 @router.get("/model-cards")
