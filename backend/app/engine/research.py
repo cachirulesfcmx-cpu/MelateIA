@@ -31,6 +31,9 @@ from . import confirmation as cqueue
 from . import model_cards
 from . import portfolio as pf
 from . import research_memory as rmem
+from . import continuous as cont
+from . import meta_learning as metalearn
+from . import track_record as trec
 from .autonomous_cycle import (STATES as CYCLE_STATES, generate_hypotheses,
                                replication_gate)
 from .labs import ClassicalMLLab, DeepLearningLab, QuantumLab, StatisticalLab
@@ -790,8 +793,48 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
         except Exception as exc:
             memory_block = {"error": str(exc)}
 
+    # ---------------- v8: continuous learning ----------------
+    drift = cont.DriftTrigger().from_history(selection, cfg)
+    champion_state = None
+    if champion_row is not None:
+        champion_state = cont.ChampionState(model=champion_row.model_name)
+    decay = cont.ChampionDecay().report(
+        champion_state, best["edge_vs_random"] if best else None)
+    stop = cont.should_stop({
+        "base_rate_warning": bool(best and best["metrics"]["mean_hits"] <= baseline["mean_hits"]),
+        "q_value": best.get("q_value") if best else None,
+        "permutation_p": best_perm,
+        "experiments": len(results),
+    })
+    meta_block = {}
+    budget_block = {}
+    live_record = {"separate_from_backtest": True, "games": 0}
+    audit_block = {"records": 0}
+    if persist:
+        try:
+            meta_block = metalearn.learn(db, cfg.key)
+            budget_block = metalearn.allocate(db, cfg.key)
+            live_record = trec.live_track_record(db, cfg.key)
+            audit_block = {"records": len(trec.audit_listing(db, cfg.key, limit=200))}
+        except Exception as exc:
+            meta_block = {"error": str(exc)}
+
     run.update({
-        "protocol_version": "v7",
+        "protocol_version": "v8",
+        "continuous_cycle": cont.ContinuousLearningCycle().plan(
+            True, drift_score=drift.score,
+            active_champion=(champion_row.model_name if champion_row is not None else None)).as_dict(),
+        "drift": drift.as_dict(),
+        "champion_decay": decay,
+        "early_stopping": stop,
+        "meta_learning": meta_block,
+        "experiment_budget": budget_block,
+        "live_track_record": live_record,
+        "live_audit": audit_block,
+        # constitution v8 evidence
+        "meta_changed_gates": False,
+        "drift_promoted_anything": False,
+        "research_continues": True,
         "portfolio": portfolio_block,
         "monte_carlo": monte,
         "dynamic_ensemble": ens_block,

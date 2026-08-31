@@ -382,9 +382,9 @@ def test_constitution_endpoint(client):
     c = client.get("/api/research/constitution", headers=uh)
     assert c.status_code == 200
     body = c.json()
-    assert len(body["rules"]) == 23          # 10 + 5 (v3) + 8 (v7)
+    assert len(body["rules"]) == 32          # 10 + 5 (v3) + 8 (v7) + 9 (v8)
     ids = [r["id"] for r in body["rules"]]
-    assert ids == list(range(1, 24))
+    assert ids == list(range(1, 33))
     # rule 10 — the system is allowed to conclude there is no evidence
     assert "no existe evidencia" in body["rules"][9]["rule"].lower()
     th = body["thresholds"]
@@ -466,7 +466,7 @@ def test_research_cycle_runs_and_is_honest(client):
     assert accepted_flags == sorted(accepted_flags, reverse=True)
     # the run audits itself against the constitution
     assert run["constitution"]["compliant"] is True
-    assert len(run["constitution"]["checks"]) == 23
+    assert len(run["constitution"]["checks"]) == 32
 
     # the record is queryable, and rejected hypotheses are kept (rule 7)
     hyps = client.get("/api/research/hypotheses?game_type=melate", headers=uh).json()
@@ -605,14 +605,14 @@ def test_research_cycle_v3_protocol(client):
     assert p["version"] == "v3" and len(p["pre_registered_hypotheses"]) == 7
 
     c = client.get("/api/research/constitution", headers=uh).json()
-    assert len(c["rules"]) == 23                     # 10 + 5 (v3) + 8 (v7)
+    assert len(c["rules"]) == 32                     # 10 + 5 (v3) + 8 (v7) + 9 (v8)
     assert c["thresholds"]["correction"].startswith("Benjamini")
 
     r = client.post("/api/research/run?game_type=melate&windows=2&window_size=12"
                     "&permutations=5&perm_window=6", headers=ah)
     assert r.status_code == 200, r.text
     run = r.json()
-    assert run["status"] == "ok" and run["protocol_version"] == "v7"
+    assert run["status"] == "ok" and run["protocol_version"] == "v8"
 
     # point 7 — golden holdout is locked and excluded from selection
     gh = run["golden_holdout"]
@@ -647,7 +647,7 @@ def test_research_cycle_v3_protocol(client):
     assert run["pipeline"][0] == "api gateway"   # v4 antepone el gateway
 
     # the constitution now audits 15 rules and still passes
-    assert len(run["constitution"]["checks"]) == 23
+    assert len(run["constitution"]["checks"]) == 32
     assert run["constitution"]["compliant"] is True
 
 
@@ -802,7 +802,7 @@ def test_v4_architecture_and_cycle(client):
                     "&permutations=4&perm_window=6", headers=ah)
     assert r.status_code == 200, r.text
     run = r.json()
-    assert run["protocol_version"] == "v7"
+    assert run["protocol_version"] == "v8"
     assert run["architecture"]["gates"][-1] == "confirmation_queue"
 
     labs = run["labs"]
@@ -1217,15 +1217,15 @@ def test_v7_cycle_and_endpoints(client):
     ah = auth(client, "admin@melateai.pro", "admin1234")
 
     c = client.get("/api/research/constitution", headers=uh).json()
-    assert len(c["rules"]) == 23
-    assert [r["id"] for r in c["rules"]] == list(range(1, 24))
+    assert len(c["rules"]) == 32
+    assert [r["id"] for r in c["rules"]] == list(range(1, 33))
     assert "no se presenta como más probable" in c["rules"][15]["rule"]
 
     r = client.post("/api/research/run?game_type=melate&windows=2&window_size=12"
                     "&permutations=0&include_ml_lab=false", headers=ah)
     assert r.status_code == 200, r.text
     run = r.json()
-    assert run["protocol_version"] == "v7"
+    assert run["protocol_version"] == "v8"
     assert run["edge"]["mode"] in ("NO_EDGE", "EDGE_CANDIDATE")
     assert run["dynamic_ensemble"]["confidence"]["level"] in ("NONE", "LOW", "MEDIUM", "HIGH")
     # nothing qualified → every ensemble weight is zero
@@ -1235,7 +1235,7 @@ def test_v7_cycle_and_endpoints(client):
     assert run["portfolio"]["tickets"]
     assert run["claims_higher_probability"] is False
     assert run["claims_guarantee"] is False
-    assert len(run["constitution"]["checks"]) == 23
+    assert len(run["constitution"]["checks"]) == 32
     assert run["constitution"]["compliant"] is True
     # memory recorded the cycle's hypotheses
     assert run["research_memory"].get("experiments", 0) >= 1
@@ -1257,3 +1257,204 @@ def test_v7_cycle_and_endpoints(client):
 
     # Tris is positional: the portfolio does not apply
     assert client.get("/api/research/portfolio?game_type=tris", headers=uh).status_code == 400
+
+
+def test_v8_drift_is_computed_not_supplied(client):
+    """The package takes a drift_score nobody computes; here it comes from data."""
+    from app.engine.continuous import DriftTrigger
+    from app.engine.game_config import get_game
+    import random as _r
+
+    cfg = get_game("melate")
+    trigger = DriftTrigger()
+
+    # a stationary random history must NOT look like drift
+    rng = _r.Random(12)
+    calm = [sorted(rng.sample(range(1, 57), 6)) for _ in range(600)]
+    d = trigger.from_history(calm, cfg)
+    assert d.detected is False
+    assert d.observed_l1 > 0 and d.noise_reference > 0
+    assert "compatible con azar estacionario" in d.reason
+
+    # a history whose second half only draws low numbers IS a regime change
+    shifted = ([sorted(rng.sample(range(1, 57), 6)) for _ in range(300)]
+               + [sorted(rng.sample(range(1, 21), 6)) for _ in range(300)])
+    d2 = trigger.from_history(shifted, cfg)
+    assert d2.detected is True and d2.score > d.score
+    assert "cambio de régimen" in d2.reason
+
+    # too little history → no drift claim at all
+    assert trigger.from_history(calm[:50], cfg).detected is False
+
+
+def test_v8_early_stopping_missing_metric_is_not_failure(client):
+    """A measurement that was never taken must not stop a promising model."""
+    from app.engine.continuous import should_stop
+
+    # the reference version defaults permutation_p to 1.0, so this excellent
+    # model would be stopped for a "p>0.8" test that never ran
+    promising = should_stop({"q_value": 0.01, "experiments": 5})
+    assert promising["stop"] is False, promising["reasons"]
+
+    assert should_stop({"base_rate_warning": True})["stop"] is True
+    assert should_stop({"q_value": 0.9, "experiments": 3})["stop"] is True
+    assert should_stop({"q_value": 0.9, "experiments": 1})["stop"] is False   # too early
+    assert should_stop({"permutation_p": 0.9, "experiments": 5})["stop"] is True
+    assert should_stop({})["stop"] is False
+    # rule 26: it never touches the holdout
+    assert should_stop({"base_rate_warning": True})["touches_golden_holdout"] is False
+
+
+def test_v8_champion_decay_and_budget(client):
+    """A champion is re-checked every cycle; the budget is actually counted."""
+    from app.engine.continuous import (Budget, ChampionDecay, ChampionState,
+                                       ContinuousLearningCycle, ExperimentBudget)
+
+    champ = ChampionState("modelo_x")
+    decay = ChampionDecay()
+    decay.evaluate(champ, 0.2)                     # good cycle
+    assert champ.active is True and champ.degradation_count == 0
+    for _ in range(3):
+        decay.evaluate(champ, -0.05)               # three bad ones
+    assert champ.active is False and champ.degradation_count == 3
+    assert len(champ.history) == 4
+
+    # a good cycle in between resets the counter
+    fresh = ChampionState("y")
+    decay.evaluate(fresh, -0.1)
+    decay.evaluate(fresh, 0.3)
+    decay.evaluate(fresh, -0.1)
+    assert fresh.active is True and fresh.degradation_count == 1
+
+    assert decay.report(None, None)["champion"] is None
+    assert "nada que reevaluar" in decay.report(None, None)["message"]
+
+    # budget: spending is tracked and refused past the limit
+    eb = ExperimentBudget(Budget(statistical=3, classical_ml=2, deep_learning=1,
+                                 qnn=1, portfolio=1))
+    assert eb.spend("statistical", 3) is True
+    assert eb.spend("statistical", 1) is False      # exhausted
+    assert eb.spend("no_existe") is False
+    rep = eb.report()
+    assert rep["remaining"]["statistical"] == 0
+    assert "statistical" in rep["exhausted"] and rep["within_budget"] is True
+
+    # drift widens the plan but never promotes
+    cycle = ContinuousLearningCycle()
+    assert cycle.plan(False).status == "WAIT"
+    calm = cycle.plan(True, drift_score=0.0)
+    windy = cycle.plan(True, drift_score=0.9)
+    assert "EXPAND_RESEARCH" in windy.actions and "EXPAND_RESEARCH" not in calm.actions
+    assert len(windy.actions) > len(calm.actions)
+    assert not any("PROMOTE" in a for a in windy.actions)
+
+
+def test_v8_meta_learner_prioritises_without_touching_gates(client):
+    """It reads the real record and reallocates effort, never the thresholds."""
+    from app.engine.meta_learning import allocate, family_of, learn
+
+    assert family_of("ml_xgboost") == "classical_ml"
+    assert family_of("worker_lstm") == "deep_learning"
+    assert family_of("worker_qnn") == "qnn"
+    assert family_of("ensemble_genius") == "statistical"
+
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        m = learn(db, "melate")
+        assert set(m["priorities"]) == {"statistical", "classical_ml",
+                                        "deep_learning", "qnn", "portfolio"}
+        # untried families start optimistic so they get a first chance
+        for fam, s in m["stats"].items():
+            if s["n"] == 0:
+                assert m["priorities"][fam] == 1.0
+        assert "modifica alfa" in m["authority"].lower()
+
+        a = allocate(db, "melate")
+        assert sum(a["suggested_allocation"].values()) > 0
+        assert set(a["suggested_allocation"]) == set(a["allocation"])
+        assert "nunca" in a["note"]
+    finally:
+        db.close()
+
+
+def test_v8_live_track_record_is_real_and_separate(client):
+    """The live record is built from real predictions, apart from backtesting."""
+    from app.database import SessionLocal
+    from app.engine import track_record as trec
+
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+
+    # a prediction made BEFORE the draw, then a real draw that scores it
+    sp = client.post("/api/predictions/save", headers=uh,
+                     json={"game_type": "revanchita", "strategy": "balanceada",
+                           "numbers": [4, 8, 15, 16, 23, 42]})
+    assert sp.status_code == 200
+    cr = client.post("/api/draws", headers=ah,
+                     json={"game_type": "revanchita", "numbers": [4, 8, 15, 30, 44, 51],
+                           "draw_number": 97300})
+    assert cr.status_code == 200
+
+    rec = client.get("/api/research/track-record?game_type=revanchita", headers=uh).json()
+    assert rec["source"] == "live" and rec["separate_from_backtest"] is True
+    assert rec["games"] >= 1
+    assert rec["random_mean_hits"] is not None
+    assert "balanceada" in rec["by_strategy"]
+    assert rec["reading"] and "azar exacto" in rec["reading"]
+    assert "No se mezcla con el backtest" in rec["note"]
+
+    # audits are written before the draw and settled after it
+    db = SessionLocal()
+    try:
+        trec.record_audit(db, run_id="probe", game_type="revanchita", model="portfolio",
+                          model_version="v8-probe", seed=1, data_snapshot="abc",
+                          numbers=[4, 8, 15, 16, 23, 42])
+        listed = trec.audit_listing(db, "revanchita")
+        assert listed and listed[0]["hits"] is None      # pending until the draw
+        out = trec.settle_audits(db, "revanchita", [4, 8, 15, 30, 44, 51])
+        assert out["settled"] >= 1
+        assert trec.audit_listing(db, "revanchita")[0]["hits"] == 3
+    finally:
+        db.close()
+
+
+def test_v8_cycle_and_endpoints(client):
+    """The v8 cycle reports continuous learning and audits 32 rules."""
+    uh = auth(client, "demo@melateai.pro", "demo1234")
+    ah = auth(client, "admin@melateai.pro", "admin1234")
+
+    c = client.get("/api/research/constitution", headers=uh).json()
+    assert len(c["rules"]) == 32
+    assert [r["id"] for r in c["rules"]] == list(range(1, 33))
+    assert "NO_EDGE sigue siendo un estado válido" in c["rules"][31]["rule"]
+
+    r = client.post("/api/research/run?game_type=melate&windows=2&window_size=12"
+                    "&permutations=0&include_ml_lab=false", headers=ah)
+    assert r.status_code == 200, r.text
+    run = r.json()
+    assert run["protocol_version"] == "v8"
+    assert run["continuous_cycle"]["status"] == "RUN"
+    assert "drift" in run and "score" in run["drift"]
+    assert run["drift_promoted_anything"] is False
+    assert run["meta_changed_gates"] is False
+    assert run["research_continues"] is True
+    assert run["champion_decay"]["champion"] is None      # NO_EDGE: nothing to decay
+    assert run["early_stopping"]["touches_golden_holdout"] is False
+    assert run["meta_learning"]["priorities"]
+    assert run["experiment_budget"]["within_budget"] is True
+    assert run["live_track_record"]["separate_from_backtest"] is True
+    assert len(run["constitution"]["checks"]) == 32
+    assert run["constitution"]["compliant"] is True
+
+    for path in ("/api/research/drift?game_type=melate",
+                 "/api/research/meta-learning?game_type=melate",
+                 "/api/research/continuous-plan?game_type=melate",
+                 "/api/research/live-audits?game_type=melate",
+                 "/api/research/track-record?game_type=melate"):
+        assert client.get(path, headers=uh).status_code == 200, path
+
+    d = client.get("/api/research/drift?game_type=melate", headers=uh).json()
+    assert d["promotes_anything"] is False
+    plan = client.get("/api/research/continuous-plan?game_type=melate", headers=uh).json()
+    assert plan["status"] in ("RUN", "WAIT")

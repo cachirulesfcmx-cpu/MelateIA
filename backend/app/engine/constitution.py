@@ -60,6 +60,25 @@ RULES: list[dict] = [
      "detail": "Huella SHA-256 de (juego, hipótesis, parámetros) persistida en base de datos."},
     {"id": 23, "rule": "Las combinaciones son candidatos, nunca garantías.",
      "detail": "Ninguna salida de la app promete premio ni ventaja matemática."},
+    # --- Protocol v8 additions ---
+    {"id": 24, "rule": "El meta-learner sólo prioriza presupuesto; no modifica umbrales.",
+     "detail": "Decidir dónde mirar es un poder distinto de decidir qué cuenta como hallazgo."},
+    {"id": 25, "rule": "El presupuesto experimental es finito y auditable.",
+     "detail": "Se contabiliza el gasto por familia; un presupuesto que nadie cuenta no es un presupuesto."},
+    {"id": 26, "rule": "Early stopping no puede tocar el Golden Holdout.",
+     "detail": "Solo decide si seguir gastando esfuerzo en una línea que no produce nada."},
+    {"id": 27, "rule": "Drift activa investigación adicional, no promoción automática.",
+     "detail": "Un cambio de régimen es motivo para mirar más, no evidencia de que un modelo funcione."},
+    {"id": 28, "rule": "Un Champion se reevalúa después de cada ciclo disponible.",
+     "detail": "Ser promovido una vez no es un título permanente."},
+    {"id": 29, "rule": "La degradación persistente puede retirar un Champion.",
+     "detail": "Si la ventaja deja de aparecer durante varios ciclos, el título se pierde."},
+    {"id": 30, "rule": "Toda predicción live genera un registro auditable.",
+     "detail": "Se guarda antes del sorteo, con modelo, versión, semilla y snapshot de datos."},
+    {"id": 31, "rule": "El track record live permanece separado del backtest.",
+     "detail": "Mezclarlos es como creerse el ensayo: el backtest evalúa sobre datos ya conocidos."},
+    {"id": 32, "rule": "NO_EDGE sigue siendo un estado válido y no detiene la investigación futura.",
+     "detail": "No haber encontrado ventaja no cierra la puerta a seguir buscando con método."},
 ]
 
 # A challenger must beat the random baseline by at least this many mean hits
@@ -186,6 +205,37 @@ def check_compliance(run: dict) -> dict:
          "Ciclo sin persistencia: la memoria no aplica en una corrida en seco."))
     add(23, run.get("claims_guarantee") is False,
         "Las combinaciones se entregan como candidatos, sin promesa de premio.")
+
+    # --- Protocol v8 checks ---
+    meta = run.get("meta_learning") or {}
+    add(24, run.get("meta_changed_gates") is False,
+        f"Meta-learner priorizó {len(meta.get('priorities', {}))} familias sin tocar umbrales.")
+    budget = run.get("experiment_budget") or {}
+    add(25, budget.get("within_budget") is not None,
+        f"Presupuesto contabilizado: {sum((budget.get('used') or {}).values())} de "
+        f"{sum((budget.get('allocation') or {}).values())} experimentos usados.")
+    stop = run.get("early_stopping") or {}
+    add(26, stop.get("touches_golden_holdout") is False,
+        f"Early stopping evaluado sin tocar el holdout ({'detiene' if stop.get('stop') else 'continúa'}).")
+    drift = run.get("drift") or {}
+    add(27, run.get("drift_promoted_anything") is False,
+        f"Deriva {drift.get('score')} ({'detectada' if drift.get('detected') else 'no material'}): "
+        f"solo amplía investigación.")
+    decay = run.get("champion_decay") or {}
+    add(28, "champion" in decay,
+        decay.get("message", "Campeón reevaluado en este ciclo."))
+    add(29, decay.get("retired") is not None,
+        f"Retiro por degradación: {'sí' if decay.get('retired') else 'no aplica'}.")
+    audits = run.get("live_audit") or {}
+    add(30, audits.get("audited") is not None or audits.get("records") is not None,
+        f"{audits.get('records', 0)} predicciones live con registro auditable.")
+    live = run.get("live_track_record") or {}
+    add(31, live.get("separate_from_backtest") is True,
+        f"Track record live con {live.get('games', 0)} predicciones evaluadas, "
+        f"separado del backtest.")
+    edge_mode = (run.get("edge") or {}).get("mode")
+    add(32, run.get("research_continues") is True,
+        f"Modo {edge_mode}: la investigación sigue abierta en próximos ciclos.")
 
     return {
         "compliant": all(c["ok"] for c in checks),

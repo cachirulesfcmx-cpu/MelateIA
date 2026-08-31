@@ -120,6 +120,21 @@ type EdgeStatus = {
   evaluated_models: number; message: string;
   failed_by_gate?: Record<string, number>;
 };
+type TrackRecord = {
+  games: number; mean_hits?: number; random_mean_hits?: number | null;
+  edge_vs_random?: number | null; random_ci95?: number[] | null;
+  distribution?: Record<string, number>;
+  by_strategy?: Record<string, { games: number; mean_hits: number; edge_vs_random: number | null }>;
+  reading?: string | null; message?: string; note: string;
+};
+type Drift = { detected: boolean; score: number; observed_l1: number; noise_reference: number; reason: string };
+type MetaLearning = {
+  allocation: Record<string, number>;
+  suggested_allocation: Record<string, number>;
+  priorities: Record<string, number>;
+  meta: { reading: string; ranking: string[] };
+  note: string;
+};
 type Champion = {
   champion: null | { model_name: string; score: number; baseline_score: number; edge_vs_random: number; windows: number };
   note: string | null;
@@ -141,13 +156,16 @@ export default function Research() {
   const [hyps, setHyps] = useState<Hypothesis[]>([]);
   const [champ, setChamp] = useState<Champion | null>(null);
   const [running, setRunning] = useState(false);
-  const [tab, setTab] = useState<"ciclo" | "portafolio" | "arquitectura" | "hipotesis" | "reglas">("ciclo");
+  const [tab, setTab] = useState<"ciclo" | "historial" | "portafolio" | "arquitectura" | "hipotesis" | "reglas">("ciclo");
   const [arch, setArch] = useState<Architecture | null>(null);
   const [queue, setQueue] = useState<Queue | null>(null);
   const [workers, setWorkers] = useState<WorkerChallengers | null>(null);
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [edge, setEdge] = useState<EdgeStatus | null>(null);
   const [loadingPf, setLoadingPf] = useState(false);
+  const [track, setTrack] = useState<TrackRecord | null>(null);
+  const [drift, setDrift] = useState<Drift | null>(null);
+  const [metaL, setMetaL] = useState<MetaLearning | null>(null);
 
   const combinationGames = games.filter((g) => g.kind !== "positional");
   const theme = gameTheme(game);
@@ -164,6 +182,9 @@ export default function Research() {
     api.get<WorkerChallengers>(`/research/worker-challengers?game_type=${game}`).then(setWorkers).catch(() => setWorkers(null));
     api.get<EdgeStatus>(`/research/edge?game_type=${game}`).then(setEdge).catch(() => setEdge(null));
     setPortfolio(null);
+    api.get<TrackRecord>(`/research/track-record?game_type=${game}`).then(setTrack).catch(() => setTrack(null));
+    api.get<Drift>(`/research/drift?game_type=${game}`).then(setDrift).catch(() => setDrift(null));
+    api.get<MetaLearning>(`/research/meta-learning?game_type=${game}`).then(setMetaL).catch(() => setMetaL(null));
   }, [game]);
 
   async function loadPortfolio() {
@@ -207,7 +228,7 @@ export default function Research() {
       <GameSelector games={combinationGames} value={game} onChange={setGame} />
 
       <div className="flex gap-2">
-        {(["ciclo", "portafolio", "arquitectura", "hipotesis", "reglas"] as const).map((t) => (
+        {(["ciclo", "historial", "portafolio", "arquitectura", "hipotesis", "reglas"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -215,7 +236,7 @@ export default function Research() {
               tab === t ? "bg-white/15 text-white" : "bg-white/[0.05] text-white/50"
             }`}
           >
-            {t === "ciclo" ? "Ciclo" : t === "portafolio" ? "Portafolio" : t === "arquitectura" ? "Arquitectura" : t === "hipotesis" ? "Hipótesis" : "Constitución"}
+            {t === "ciclo" ? "Ciclo" : t === "historial" ? "Historial real" : t === "portafolio" ? "Portafolio" : t === "arquitectura" ? "Arquitectura" : t === "hipotesis" ? "Hipótesis" : "Constitución"}
           </button>
         ))}
       </div>
@@ -543,6 +564,92 @@ export default function Research() {
           {run?.status === "insufficient_data" && (
             <GlassCard className="!p-3">
               <p className="text-xs text-white/70">{run.message}</p>
+            </GlassCard>
+          )}
+        </div>
+      )}
+
+      {tab === "historial" && (
+        <div className="space-y-3">
+          {track && (
+            <GlassCard className="!p-4">
+              <p className="text-[11px] text-white/40 uppercase tracking-wide mb-2">
+                Historial real de la app · separado del backtest
+              </p>
+              {track.games === 0 ? (
+                <p className="text-xs text-white/60">{track.message}</p>
+              ) : (
+                <>
+                  <div className="grid grid-cols-3 gap-2 text-center mb-3">
+                    <div>
+                      <p className="text-lg font-bold tnum">{track.games}</p>
+                      <p className="text-[10px] text-white/40">evaluadas</p>
+                    </div>
+                    <div>
+                      <p className="text-lg font-bold tnum">{track.mean_hits}</p>
+                      <p className="text-[10px] text-white/40">aciertos medios</p>
+                    </div>
+                    <div>
+                      <p className="text-lg font-bold tnum">{track.random_mean_hits}</p>
+                      <p className="text-[10px] text-white/40">azar exacto</p>
+                    </div>
+                  </div>
+                  {track.reading && (
+                    <p className="text-xs text-white/70 leading-relaxed">{track.reading}</p>
+                  )}
+                  {track.by_strategy && Object.keys(track.by_strategy).length > 0 && (
+                    <div className="mt-3 space-y-1">
+                      {Object.entries(track.by_strategy).slice(0, 8).map(([k, v]) => (
+                        <div key={k} className="flex justify-between text-[11px]">
+                          <span className="text-white/65">{k}</span>
+                          <span className="tnum text-white/45">
+                            {v.games} pred. · {v.mean_hits}
+                            {v.edge_vs_random !== null && (
+                              <> · {v.edge_vs_random > 0 ? "+" : ""}{v.edge_vs_random}</>
+                            )}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+              <p className="text-[10px] text-white/35 mt-3 leading-relaxed">{track.note}</p>
+            </GlassCard>
+          )}
+
+          {drift && (
+            <GlassCard className="!p-3">
+              <p className="text-[11px] text-white/40 uppercase tracking-wide mb-1">
+                Deriva ·{" "}
+                <span className={drift.detected ? "text-amber-300" : "text-white/60"}>
+                  {drift.detected ? "cambio de régimen" : "sin deriva material"}
+                </span>
+              </p>
+              <p className="text-xs text-white/70 leading-relaxed">{drift.reason}</p>
+              <p className="text-[10px] text-white/35 mt-1 tnum">
+                score {drift.score} · L1 {drift.observed_l1} vs {drift.noise_reference} de ruido
+              </p>
+            </GlassCard>
+          )}
+
+          {metaL && (
+            <GlassCard className="!p-3">
+              <p className="text-[11px] text-white/40 uppercase tracking-wide mb-1">
+                Meta-learner · presupuesto experimental
+              </p>
+              <p className="text-xs text-white/70 leading-relaxed mb-2">{metaL.meta.reading}</p>
+              <div className="space-y-1">
+                {Object.entries(metaL.suggested_allocation).map(([k, v]) => (
+                  <div key={k} className="flex justify-between text-[11px]">
+                    <span className="text-white/65">{k.replace(/_/g, " ")}</span>
+                    <span className="tnum text-white/45">
+                      {metaL.allocation[k]} → {v} · prioridad {metaL.priorities[k]}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] text-white/35 mt-2 leading-relaxed">{metaL.note}</p>
             </GlassCard>
           )}
         </div>
