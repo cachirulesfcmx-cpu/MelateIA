@@ -34,6 +34,7 @@ from . import research_memory as rmem
 from . import continuous as cont
 from . import meta_learning as metalearn
 from . import track_record as trec
+from . import live_intelligence as li
 from .autonomous_cycle import (STATES as CYCLE_STATES, generate_hypotheses,
                                replication_gate)
 from .labs import ClassicalMLLab, DeepLearningLab, QuantumLab, StatisticalLab
@@ -108,6 +109,16 @@ def _hits(ticket: list[int], actual: list[int], cfg: GameConfig) -> int:
     if cfg.kind == "positional":
         return sum(1 for i, d in enumerate(ticket[:len(actual)]) if d == actual[i])
     return len(set(ticket) & set(actual))
+
+
+def _live_hits(db, game_type: str) -> list[int]:
+    """Real hits of this app's own predictions, oldest first."""
+    from ..models import Prediction, PredictionResult
+    rows = (db.query(PredictionResult.hits)
+            .join(Prediction, PredictionResult.prediction_id == Prediction.id)
+            .filter(Prediction.game_type == game_type)
+            .order_by(PredictionResult.evaluated_at.asc()).all())
+    return [int(r[0] or 0) for r in rows]
 
 
 def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
@@ -819,8 +830,39 @@ def run_research(db: Session, cfg: GameConfig, history: list[list[int]],
         except Exception as exc:
             meta_block = {"error": str(exc)}
 
+    # ---------------- v9: live intelligence ----------------
+    seq_block = {}
+    lineage_block = {}
+    adaptive_block = {}
+    if persist:
+        try:
+            hits = [h for h in _live_hits(db, cfg.key)]
+            if len(hits) >= 2:
+                seq_block = li.summarize_live(
+                    "app_live", hits, baseline["mean_hits"], looks=max(1, len(hits)))
+            lineage = li.DataLineage(
+                model_version=f"cycle-{run_id}",
+                train_snapshot=rlab.hash_draws(split.train)[:16],
+                validation_snapshot=rlab.hash_draws(split.validation)[:16],
+                holdout_snapshot=golden_block.get("sha256", "")[:16],
+                live_start_snapshot=rlab.hash_draws(selection[-1:])[:16],
+                live_predictions_count=len(hits),
+                training_includes_live=False)
+            lineage.validate()
+            lineage_block = lineage.to_dict()
+            adaptive_block = li.AdaptiveBudget().report(
+                (meta_block or {}).get("priorities") or {})
+        except Exception as exc:
+            seq_block = {"error": str(exc)}
+
     run.update({
-        "protocol_version": "v8",
+        "protocol_version": "v9",
+        "sequential": seq_block,
+        "data_lineage": lineage_block,
+        "adaptive_budget": adaptive_block,
+        "windows_replace_corrected_tests": False,
+        "ranking_uses_only_delta": False,
+        "live_promoted_champion": False,
         "continuous_cycle": cont.ContinuousLearningCycle().plan(
             True, drift_score=drift.score,
             active_champion=(champion_row.model_name if champion_row is not None else None)).as_dict(),

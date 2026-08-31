@@ -11,6 +11,27 @@ import { sharePrediction } from "../shareImage";
 import type { GeneratedCombo } from "../api/types";
 import { getDefaultGame } from "../settings";
 
+type ResearchInfo = {
+  applied: boolean;
+  requested: number;
+  returned: number;
+  risk_filter: { rejected: Record<string, number>; rejected_count: number };
+  diversification: {
+    overlap_limit: number; mean_overlap: number; max_overlap: number;
+    distinct_numbers: number; coverage_share: number;
+  };
+  audited_predictions: number;
+  edge_mode: string;
+  edge_message: string | null;
+  live: null | {
+    overall_games: number; overall_mean_hits: number; random_mean_hits: number | null;
+    strategy_games: number; strategy_mean_hits: number | null; strategy_edge: number | null;
+    reading: string | null;
+  };
+  sequential: null | { status: string; ci_low: number; ci_high: number; looks: number; reading: string };
+  disclaimer: string;
+};
+
 export default function Predictions() {
   const games = useGames();
   const strategies = useStrategies();
@@ -20,6 +41,7 @@ export default function Predictions() {
   const [strategy, setStrategy] = useState("evolutiva");
   const [count, setCount] = useState(5);
   const [combos, setCombos] = useState<GeneratedCombo[]>([]);
+  const [research, setResearch] = useState<ResearchInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [saved, setSaved] = useState<Set<number>>(new Set());
 
@@ -29,14 +51,13 @@ export default function Predictions() {
   async function generate() {
     setLoading(true);
     setCombos([]);
+    setResearch(null);
     setSaved(new Set());
     try {
-      const res = await api.post<{ combos: GeneratedCombo[] }>("/predictions/generate", {
-        game_type: game,
-        strategy,
-        count,
-      });
+      const res = await api.post<{ combos: GeneratedCombo[]; research?: ResearchInfo }>(
+        "/predictions/generate", { game_type: game, strategy, count });
       setCombos(res.combos);
+      setResearch(res.research ?? null);
       if (!res.combos.length) notify("No se generaron combinaciones", "error");
     } catch (err) {
       notify((err as Error).message, "error");
@@ -104,6 +125,69 @@ export default function Predictions() {
       </GlassCard>
 
       {loading && <Spinner label="Motor híbrido evaluando miles de combinaciones…" />}
+
+      {research?.applied && (
+        <GlassCard className="!p-3 mb-4 animate-fade-in">
+          <p className="text-[11px] text-white/40 uppercase tracking-wide mb-2">
+            Capa de investigación aplicada
+          </p>
+
+          <div className="flex items-center gap-2 mb-2">
+            <span
+              className={`text-[10px] px-2 py-1 rounded-lg border ${
+                research.edge_mode === "NO_EDGE"
+                  ? "text-rose-300 border-rose-400/30 bg-rose-500/10"
+                  : "text-emerald-300 border-emerald-400/30 bg-emerald-500/10"
+              }`}
+            >
+              {research.edge_mode}
+            </span>
+            <span className="text-[10px] text-white/45 tnum">
+              {research.audited_predictions} auditadas · {research.returned}/{research.requested} tras filtros
+            </span>
+          </div>
+
+          <div className="space-y-1 text-[11px] text-white/65">
+            {research.risk_filter.rejected_count > 0 ? (
+              <p>
+                Filtro de riesgo descartó{" "}
+                {Object.entries(research.risk_filter.rejected)
+                  .filter(([, v]) => v > 0)
+                  .map(([k, v]) => `${v} por ${k.replace(/_/g, " ")}`)
+                  .join(", ")}
+                .
+              </p>
+            ) : (
+              <p>Filtro de riesgo: ninguna combinación descartada.</p>
+            )}
+            <p className="tnum">
+              Diversificación: solape medio {research.diversification.mean_overlap} (máx{" "}
+              {research.diversification.max_overlap}) · {research.diversification.distinct_numbers}{" "}
+              números distintos.
+            </p>
+            {research.live && research.live.strategy_games > 0 && (
+              <p className="tnum">
+                Historial real de esta estrategia: {research.live.strategy_games} predicciones ·{" "}
+                {research.live.strategy_mean_hits} aciertos vs {research.live.random_mean_hits} del azar.
+              </p>
+            )}
+            {research.sequential && (
+              <p className="tnum text-white/50">
+                IC ajustado por {research.sequential.looks} miradas: [
+                {research.sequential.ci_low}, {research.sequential.ci_high}] →{" "}
+                {research.sequential.status === "SIGNAL_CANDIDATE"
+                  ? "candidato a señal"
+                  : "compatible con el azar"}
+                .
+              </p>
+            )}
+          </div>
+
+          <p className="text-[10px] text-amber-200/80 mt-2 leading-relaxed">
+            {research.disclaimer}
+          </p>
+        </GlassCard>
+      )}
 
       {combos.length > 0 && (
         <div className="animate-slide-up">

@@ -21,6 +21,8 @@ from ..engine.symbolic import score_combination
 from ..engine.features import combination_features, is_prime
 from ..engine.data_engine import numbers_to_str, str_to_numbers
 from ..services import build_stats, load_draw_rows
+from ..engine import prediction_pipeline as pipeline
+from ..engine.research_lab import hash_draws
 
 router = APIRouter(prefix="/api/predictions", tags=["predictions"])
 
@@ -89,7 +91,12 @@ def generate_predictions(payload: PredictionGenerate, db: Session = Depends(get_
                 "strategy": "evolutiva",
                 "features": combination_features(t, stats),
             })
-        return {"game_type": payload.game_type, "strategy": "evolutiva", "combos": combos, "routed_to": None, "context": None}
+        processed = pipeline.apply_research(
+            db, cfg, combos, strategy="evolutiva",
+            data_snapshot=hash_draws(history[-50:]))
+        return {"game_type": payload.game_type, "strategy": "evolutiva",
+                "combos": processed["combos"], "routed_to": None, "context": None,
+                "research": processed["research"]}
 
     # "Adaptativa" = contextual bandit: route to the best strategy learned for
     # the CURRENT regime, falling back to the global best, then the hybrid engine.
@@ -116,7 +123,15 @@ def generate_predictions(payload: PredictionGenerate, db: Session = Depends(get_
         for c in combos:
             c["strategy"] = "adaptativa"
             c["explanation"] = f"Adaptativa (IA · régimen {ctx}) → estrategia mejor evaluada: {STRATEGIES[effective]['label']}. " + c["explanation"]
-    return {"game_type": payload.game_type, "strategy": payload.strategy, "combos": combos, "routed_to": routed, "context": ctx}
+
+    # Every strategy goes through the research layer: risk filter,
+    # diversification, live audit and the current evidence context.
+    processed = pipeline.apply_research(
+        db, cfg, combos, strategy=payload.strategy,
+        data_snapshot=hash_draws(history[-50:]))
+    return {"game_type": payload.game_type, "strategy": payload.strategy,
+            "combos": processed["combos"], "routed_to": routed, "context": ctx,
+            "research": processed["research"]}
 
 
 def _recent_evaluated(db: Session, game_type: str, limit: int = 40) -> list[tuple[set, set]]:
